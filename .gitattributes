@@ -1,0 +1,4 @@
+# This plugin has deliberately mixed LF/CRLF files and ships as a zip built
+# straight from the working tree - git must not rewrite line endings, or a
+# fresh checkout would differ byte-for-byte from the reviewed release.
+* -text

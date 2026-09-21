@@ -1,0 +1,9 @@
+# Build output and archived release zips. These stay on disk - they are
+# just not tracked, since they are regenerable binary noise in history.
+*.zip
+*.bak
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
