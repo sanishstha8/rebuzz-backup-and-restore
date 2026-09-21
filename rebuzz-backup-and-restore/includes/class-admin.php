@@ -872,6 +872,54 @@ public function start_restore()
         ));
     }
 
+    /*
+     * Runs after the stale-workspace sweep above, so it measures the disk as
+     * extraction will find it, and before the job and lock exist, so a
+     * refusal cannot strand a lock file behind it.
+     */
+    $entries = isset($space['entries']) ? $space['entries'] : 0;
+
+    $inodes = wpcb_backup_inode_estimate($zip, $entries);
+    $probe = wpcb_probe_restore_storage($entries);
+
+    $logger = new WPCB_Logger('restore');
+
+    if ($probe['status'] === 'failed') {
+
+        $logger->log(sprintf(
+            'Restore refused by the storage probe (%s): wrote %d of %d bytes, created %d of %d files. Backup expects %d files and %d folders (%s). disk_free_space %s. Raw error: %s',
+            $probe['kind'],
+            $probe['bytes'],
+            $probe['expected'],
+            $probe['files'],
+            $probe['attempted'],
+            $inodes['files'],
+            $inodes['directories'],
+            $inodes['source'],
+            empty($space['measured']) ? 'unmeasurable' : size_format($space['free']),
+            ($probe['error'] === '') ? 'none' : $probe['error']
+        ));
+
+        wp_send_json_error(
+            wpcb_restore_storage_probe_message($probe, $inodes, $space)
+        );
+    }
+
+    // Logged on every outcome: the first question after the next failure is
+    // whether this ran at all and what it saw.
+    if ($probe['status'] === 'unknown') {
+
+        $logger->log('The storage probe could not run, so this restore is starting without it.');
+
+    } else {
+
+        $logger->log(sprintf(
+            'Storage probe passed: wrote %s and created %d test files.',
+            size_format($probe['bytes']),
+            $probe['files']
+        ));
+    }
+
     $job = new WPCB_Job();
 
     // Check + acquire aren't atomic (race possible between requests);

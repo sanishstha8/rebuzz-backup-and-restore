@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.2
+Stable tag: 1.4.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -39,6 +39,10 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 
 That is what it was built for. Every step is chunked and resumable, so the plugin works inside short execution-time and memory limits instead of asking you to raise them.
 
+= My restore stopped before it started, saying the account is out of space or files. What now? =
+
+Before a restore begins the plugin writes a few megabytes and creates some test files in its own folder. If that fails, your hosting account has hit its storage quota or its file-count (inode) limit, and the restore would have failed part-way through anyway - so it stops first and says so. Both figures are in your hosting control panel; cPanel shows the second as "File Usage" or "Inodes". The test is deliberately smaller than the first batch of a real extraction, so it will not refuse a restore that would have worked, but if it ever misfires you can switch it off with `define('WPCB_RESTORE_PROBE_FILES', 0);` in `wp-config.php`.
+
 = Where are my backups stored, and can anyone download them? =
 
 By default in `wp-content/uploads/rebuzz-backup-and-restore/backups/`. The plugin writes `.htaccess` and `web.config` rules there, but those only apply on Apache and IIS - on Nginx they are ignored and the archive is served as an ordinary static file to anyone who knows its name.
@@ -65,6 +69,17 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 
 == Changelog ==
 
+= 1.4.3 =
+* Fixed: a restore on shared hosting could run for thousands of files and then fail part-way through because the account was out of storage or had reached its file-count (inode) limit. Before a restore starts, the plugin now actually writes a few megabytes and creates a small number of test files in its own folder, and refuses to start if that fails - naming which limit was reached instead of stopping at an arbitrary file. The old check only asked the server how much space was free, which on shared hosting reports the whole disk rather than what your account is allowed to use, and cannot see inode limits at all.
+* Fixed: the free-space check measured the wrong folder when `WPCB_BACKUP_DIR` was set, reporting space for a filesystem the restore never writes to.
+* Added: the restore log now records what the pre-flight checks saw on every restore, not only on failure.
+* Note: the new test is deliberately smaller than the first batch of a real extraction, so it cannot refuse a restore that would have worked. If it ever misfires on an unusual host, `define('WPCB_RESTORE_PROBE_FILES', 0);` in `wp-config.php` turns it off.
+
+= 1.4.2 =
+* Fixed: a failed extraction could report only "Extraction failed for: <file>" with no cause. The plugin now identifies why - a full disk or exceeded hosting quota, a folder PHP cannot write to, a damaged or incompletely uploaded archive, a path the filesystem rejects, or the server running out of file handles - so the message says what to fix. It also now recognises the "Not a directory" error Linux reports where Windows reports something different.
+* Fixed: a file listed by the scan but missing from the extracted workspace was skipped silently, so a partial extraction could still finish reporting a clean restore. Missing files are now logged by name and counted, which triggers the existing end-of-restore warning.
+* Fixed: during URL rewriting, a database write that failed was still counted as a successful change.
+
 = 1.4.0 =
 * Fixed: downloading a backup from the admin panel is much faster. It was reading the archive 8KB at a time and forcing a flush after every read - roughly 77,000 of them for a 600MB file. It now reads 1MB at a time and lets the server flush, which measured about twice as fast locally. A long download is also no longer cut short by `max_execution_time`, which could leave a truncated ZIP that looked complete.
 * Security: the plugin now refuses to create a backup it cannot store privately, instead of creating one anybody could download. Before a backup starts it checks whether the backup folder is reachable over HTTP - by requesting a short-lived file from it with no login - and stops with instructions if it is. A backup archive contains your entire database, including every user account and password hash, so an unguessable filename is not enough on its own.
@@ -89,6 +104,12 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.4.3 =
+A restore that would run out of storage or hit the account's file-count limit part-way through is now stopped before it starts, with a message naming which limit was reached. Recommended for anyone on shared hosting whose restore has failed mid-way.
+
+= 1.4.2 =
+A failed extraction now reports why it failed instead of only which file it stopped at, and a partial extraction can no longer finish reporting a clean restore.
 
 = 1.4.0 =
 Removes a generated file from wp-content/mu-plugins, hardens backup filenames against direct download, and fixes several failure cases where a full disk could produce a backup that looked complete but could not be restored. Existing backups and their location are unchanged.
