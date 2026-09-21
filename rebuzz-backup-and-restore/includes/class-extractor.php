@@ -132,7 +132,7 @@ class WPCB_Extractor
 
                 if (!@$zip->extractTo($destination, [$name])) {
 
-                    $reason = $this->extractionFailureReason($zip, $destination);
+                    $reason = $this->extractionFailureReason($zip, $destination, $name);
 
                     $zip->close();
 
@@ -160,7 +160,7 @@ class WPCB_Extractor
 
             if ($result === false) {
 
-                $reason = $this->extractionFailureReason($zip, $destination);
+                $reason = $this->extractionFailureReason($zip, $destination, $name);
 
                 $zip->close();
 
@@ -217,7 +217,7 @@ class WPCB_Extractor
      *
      * @return string A sentence, or '' if nothing could be determined.
      */
-    private function extractionFailureReason(ZipArchive $zip, $destination)
+    private function extractionFailureReason(ZipArchive $zip, $destination, $name = '')
     {
         $error = error_get_last();
 
@@ -245,6 +245,11 @@ class WPCB_Extractor
 
             if (stripos($message, 'Permission denied') !== false) {
                 return __('the destination folder is not writable by PHP.', 'rebuzz-backup-and-restore');
+            }
+
+            // ENOTDIR: Linux says "Not a directory" where Windows says ENOENT.
+            if (stripos($message, 'Not a directory') !== false) {
+                return __('a folder in its path already exists as a file, so the rest of the path could not be created.', 'rebuzz-backup-and-restore');
             }
 
             if (stripos($message, 'File name too long') !== false || stripos($message, 'name too long') !== false) {
@@ -304,7 +309,54 @@ class WPCB_Extractor
             return $this->rawErrorReason($message);
         }
 
-        return '';
+        return $this->silentFailureReason($zip, $destination, $name);
+    }
+
+    /**
+     * Last resort when PHP raised nothing and the archive reports ER_OK.
+     *
+     * extractTo() and getStream() both resolve the entry by name and
+     * return false with no warning when that lookup fails, which left a
+     * bare "Extraction failed for: X" as the only output for a whole
+     * class of failures. Probe the causes directly instead.
+     */
+    private function silentFailureReason(ZipArchive $zip, $destination, $name)
+    {
+        if ($name === '') {
+            return '';
+        }
+
+        // Listed by index, yet not resolvable by name - inconsistent index.
+        if (method_exists($zip, 'locateName') && $zip->locateName($name) === false) {
+            return __('the archive lists this entry but it cannot be looked up by name, so the ZIP index is inconsistent - re-create the backup.', 'rebuzz-backup-and-restore');
+        }
+
+        $current = rtrim($destination, '/' . DIRECTORY_SEPARATOR);
+
+        foreach (explode('/', trim(dirname($name), '/')) as $segment) {
+
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+
+            $current .= '/' . $segment;
+
+            // A path component occupied by a file is ENOTDIR waiting to happen.
+            if (file_exists($current) && !is_dir($current)) {
+                return sprintf(
+                    /* translators: %s: path of the component that is a file where a folder is needed */
+                    __('a folder in its path already exists as a file (%s), so the rest of the path cannot be created.', 'rebuzz-backup-and-restore'),
+                    $current
+                );
+            }
+        }
+
+        // Nothing probed positive - report the status code rather than nothing.
+        return sprintf(
+            /* translators: %d: numeric ZipArchive status code */
+            __('PHP reported no error and the archive reports status %d. Re-create the backup; if it recurs the host is likely blocking the write (security scanner, or an inode/disk quota).', 'rebuzz-backup-and-restore'),
+            isset($zip->status) ? (int) $zip->status : -1
+        );
     }
 
     /**

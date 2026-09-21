@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.4.0
+ * Version: 1.4.2
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -91,7 +91,7 @@ if (!defined('ABSPATH')) {
     }
 })();
 
-define('WPCB_VERSION', '1.4.0');
+define('WPCB_VERSION', '1.4.2');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 

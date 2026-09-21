@@ -181,7 +181,19 @@ class WPCB_Url_Rewriter
                         $where[$keyColumn] = $row[$keyColumn];
                     }
 
-                    $wpdb->update($table, $updates, $where);
+                    // Checked like every other write here - a silent failure would count as a success.
+                    if ($wpdb->update($table, $updates, $where) === false) {
+
+                        if (class_exists('WPCB_Logger')) {
+                            (new WPCB_Logger())->log(sprintf(
+                                'URL rewrite: update failed on table %s: %s',
+                                $table,
+                                $wpdb->last_error
+                            ));
+                        }
+
+                        continue;
+                    }
 
                     $rowsChanged++;
                 }

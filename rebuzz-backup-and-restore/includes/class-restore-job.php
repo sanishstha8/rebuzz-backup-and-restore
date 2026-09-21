@@ -1818,6 +1818,12 @@ class WPCB_Restore_Job
                 $destination = $root . '/' . $relative;
 
                 if (!file_exists($source)) {
+
+                    // Listed by the scan but absent from the workspace - extraction dropped it.
+                    $this->logger->log("Missing from extracted backup, not restored: {$relative}");
+
+                    $failed++;
+
                     continue;
                 }
 
