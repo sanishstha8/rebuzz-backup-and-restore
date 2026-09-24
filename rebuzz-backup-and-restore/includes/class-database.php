@@ -304,6 +304,27 @@ class WPCB_Database
 
         while ((microtime(true) - $startTime) < self::EXPORT_TIME_BUDGET_SECONDS) {
 
+            // Size the batch from the next rows' real sizes; see wpcb_has_large_columns().
+            if (!empty($cursor['probe'])) {
+
+                $lengths = $wpdb->get_col(
+                    $this->batchQuery($wpdb, $table, array_merge($cursor, ['batch' => self::BATCH_SIZE]), wpcb_length_select($cursor['columns']))
+                );
+
+                if ($wpdb->last_error !== '') {
+
+                    $this->exportError = 'reading its row sizes failed (' . $wpdb->last_error . ')';
+
+                    return false;
+                }
+
+                if (empty($lengths)) {
+                    return $this->write($handle, "\n");
+                }
+
+                $cursor['batch'] = wpcb_rows_within_bytes($lengths, self::BATCH_TARGET_BYTES);
+            }
+
             $rows = $wpdb->get_results($this->batchQuery($wpdb, $table, $cursor), ARRAY_A);
 
             $error = $wpdb->last_error;
@@ -329,7 +350,9 @@ class WPCB_Database
 
             $fetched = count($rows);
             $requested = $cursor['batch'];
-            $cursor['batch'] = wpcb_adapt_batch_rows($requested, $this->rowsBytes($rows), self::BATCH_TARGET_BYTES, self::BATCH_SIZE);
+            if (empty($cursor['probe'])) {
+                $cursor['batch'] = wpcb_adapt_batch_rows($requested, $this->rowsBytes($rows), self::BATCH_TARGET_BYTES, self::BATCH_SIZE);
+            }
 
             if (!empty($cursor['keys'])) {
 
@@ -395,15 +418,21 @@ class WPCB_Database
             'integer' => $integer,
             'after' => null,
             'offset' => 0,
-            'batch' => wpcb_initial_batch_rows($table, self::BATCH_TARGET_BYTES, self::BATCH_SIZE),
+            'batch' => wpcb_initial_batch_rows(self::BATCH_SIZE),
+            'probe' => wpcb_has_large_columns($types),
+            'columns' => array_keys($types),
         ];
     }
 
-    /** The SELECT for a table's next batch - see tableCursor(). */
-    private function batchQuery($wpdb, $table, array $cursor)
+    /**
+     * The SELECT for a table's next batch - see tableCursor().
+     *
+     * @param string $select Column list; the row-size probe passes wpcb_length_select().
+     */
+    private function batchQuery($wpdb, $table, array $cursor, $select = '*')
     {
         if (empty($cursor['keys'])) {
-            return $wpdb->prepare("SELECT * FROM `$table` LIMIT %d OFFSET %d", $cursor['batch'], $cursor['offset']);
+            return $wpdb->prepare("SELECT {$select} FROM `$table` LIMIT %d OFFSET %d", $cursor['batch'], $cursor['offset']);
         }
 
         $columns = array_map(function ($column) {
@@ -442,7 +471,7 @@ class WPCB_Database
             $where = ' WHERE ' . implode(' OR ', $terms);
         }
 
-        return "SELECT * FROM `$table`{$where} ORDER BY " . implode(',', $columns) . sprintf(' LIMIT %d', $cursor['batch']);
+        return "SELECT {$select} FROM `$table`{$where} ORDER BY " . implode(',', $columns) . sprintf(' LIMIT %d', $cursor['batch']);
     }
 
     /** Total length of every value in $rows - the batch's real size. */

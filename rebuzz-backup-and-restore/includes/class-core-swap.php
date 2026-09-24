@@ -10,10 +10,14 @@ if (!defined('ABSPATH')) {
  *
  * Copying core file by file across many requests left the site running
  * a half-old, half-new core between requests, and new core running
- * against the old database sends wp-admin to upgrade.php. So the
- * backup's core is first copied, in chunks, into STAGE_DIR beside the
- * live one - the same filesystem, so a rename is near-instant - and
- * WPCB_Restore_Job swaps it in together with the database.
+ * against the old database sends wp-admin to upgrade.php. So core is
+ * renamed in, and WPCB_Restore_Job swaps it together with the database.
+ *
+ * The staged core is the extracted backup itself and the replaced core
+ * goes into the restore workspace, so neither sits in the web root -
+ * where a server without .htaccess support (Nginx) would serve it. Only
+ * when the workspace is on another filesystem, and so can't be renamed
+ * from, is core copied into STAGE_DIR/OLD_DIR in the WordPress root.
  *
  * Every rename is journaled in the restore workspace as it happens, so
  * a crash between the core swap and the database swap can be undone by
@@ -23,17 +27,27 @@ if (!defined('ABSPATH')) {
 
 class WPCB_Core_Swap
 {
+    /** Fallback staging folders in the WordPress root; see the class docblock. */
     const STAGE_DIR = 'wpcb-core-new';
     const OLD_DIR = 'wpcb-core-old';
+
     const JOURNAL = 'core.swap.json';
+    const PATHS = 'core.paths.json';
     const DIRECTORIES = ['wp-admin', 'wp-includes'];
 
     private $workspace;
     private $journal = [];
+    private $stage;
+    private $old;
 
     public function __construct(WPCB_Restore_Workspace $workspace)
     {
         $this->workspace = $workspace;
+
+        $paths = $workspace->getJson(self::PATHS);
+
+        $this->stage = !empty($paths['stage']) ? $paths['stage'] : self::root() . '/' . self::STAGE_DIR;
+        $this->old = !empty($paths['old']) ? $paths['old'] : self::root() . '/' . self::OLD_DIR;
     }
 
     public static function root()
@@ -41,14 +55,20 @@ class WPCB_Core_Swap
         return rtrim(str_replace('\\', '/', ABSPATH), '/');
     }
 
-    public static function stagePath()
+    public function stagePath()
     {
-        return self::root() . '/' . self::STAGE_DIR;
+        return $this->stage;
     }
 
-    public static function oldPath()
+    public function oldPath()
     {
-        return self::root() . '/' . self::OLD_DIR;
+        return $this->old;
+    }
+
+    /** True once prepare() chose to swap straight from the extracted backup. */
+    public function isInPlace()
+    {
+        return !empty($this->workspace->getJson(self::PATHS)['in_place']);
     }
 
     /**
@@ -73,10 +93,24 @@ class WPCB_Core_Swap
         return strpos($relative, '/') === false && substr($relative, -4) === '.php';
     }
 
-    /** Creates STAGE_DIR, denied to web visitors while it exists. */
-    public static function prepareStage()
+    /**
+     * Choose where the staged and replaced core live: the workspace if a
+     * directory renames between it and the WordPress root (then nothing
+     * needs copying), else the fallback folders in the root.
+     *
+     * @param string $filesDir The workspace's extracted files/ folder.
+     * @return string|false 'in_place', 'copy', or false if neither works.
+     */
+    public function prepare($filesDir)
     {
-        $stage = self::stagePath();
+        $filesDir = rtrim(str_replace('\\', '/', $filesDir), '/');
+        $old = rtrim(str_replace('\\', '/', $this->workspace->path()), '/') . '/core-old';
+
+        if (self::canRenameBetween($filesDir, self::root()) && wp_mkdir_p($old)) {
+            return $this->savePaths($filesDir, $old, true) ? 'in_place' : false;
+        }
+
+        $stage = self::root() . '/' . self::STAGE_DIR;
 
         if (!is_dir($stage) && !wp_mkdir_p($stage)) {
             return false;
@@ -84,7 +118,74 @@ class WPCB_Core_Swap
 
         wpcb_protect_directory($stage);
 
-        return true;
+        return $this->savePaths($stage, self::root() . '/' . self::OLD_DIR, false) ? 'copy' : false;
+    }
+
+    /**
+     * Everything swap() will need, checked while nothing has been
+     * changed yet - so a server that can't swap core refuses the restore
+     * before any plugin, theme or upload is overwritten.
+     *
+     * @return string|null What is in the way, or null if the swap can run.
+     */
+    public function preflight()
+    {
+        $root = self::root();
+
+        if (!is_dir($this->stage)) {
+            return sprintf('the staged WordPress core is missing (%s)', $this->display($this->stage));
+        }
+
+        if (!is_dir($this->old) && !wp_mkdir_p($this->old)) {
+            return sprintf('could not create %s', $this->display($this->old));
+        }
+
+        // Real renames, both ways: permissions and filesystem boundaries both show up here.
+        if (!self::canRenameBetween($this->stage, $root) || !self::canRenameBetween($root, $this->old)) {
+            return 'folders cannot be renamed in the WordPress root folder - check that it is writable';
+        }
+
+        foreach (self::DIRECTORIES as $dir) {
+
+            // Moving a directory to a new parent rewrites its ".." entry.
+            if (is_dir($root . '/' . $dir) && !is_writable($root . '/' . $dir)) {
+                return sprintf('%s is not writable', $dir);
+            }
+        }
+
+        // On Windows the running script can't be renamed, so swap() overwrites it instead.
+        $script = isset($_SERVER['SCRIPT_FILENAME']) ? realpath((string) $_SERVER['SCRIPT_FILENAME']) : false;
+
+        if ($script !== false && strpos(str_replace('\\', '/', $script), $root . '/') === 0 && !is_writable($script)) {
+            return sprintf('%s is not writable', $this->display(str_replace('\\', '/', $script)));
+        }
+
+        return null;
+    }
+
+    /** Rename a scratch directory from $from into $to and back. */
+    private static function canRenameBetween($from, $to)
+    {
+        $name = 'wpcb-probe-' . wp_generate_password(8, false);
+
+        if (!wp_mkdir_p($from . '/' . $name)) {
+            return false;
+        }
+
+        $moved = @rename($from . '/' . $name, $to . '/' . $name);
+        $back = $moved && @rename($to . '/' . $name, $from . '/' . $name);
+
+        @rmdir($back || !$moved ? $from . '/' . $name : $to . '/' . $name);
+
+        return $back;
+    }
+
+    private function savePaths($stage, $old, $inPlace)
+    {
+        $this->stage = $stage;
+        $this->old = $old;
+
+        return (bool) $this->workspace->put(self::PATHS, ['stage' => $stage, 'old' => $old, 'in_place' => $inPlace]);
     }
 
     /**
@@ -103,8 +204,8 @@ class WPCB_Core_Swap
             return ['ok' => false, 'error' => 'could not undo an earlier, interrupted core swap', 'swapped' => 0];
         }
 
-        $stage = self::stagePath();
-        $old = self::oldPath();
+        $stage = $this->stage;
+        $old = $this->old;
 
         if (is_dir($old)) {
             wpcb_delete_path($old);
@@ -172,8 +273,8 @@ class WPCB_Core_Swap
     private function moveIn($relative)
     {
         $live = self::root() . '/' . $relative;
-        $stage = self::stagePath() . '/' . $relative;
-        $old = self::oldPath() . '/' . $relative;
+        $stage = $this->stage . '/' . $relative;
+        $old = $this->old . '/' . $relative;
 
         if (file_exists($live)) {
 
@@ -323,7 +424,7 @@ class WPCB_Core_Swap
         return $ok;
     }
 
-    /** Remove the staged and replaced copies of core. */
+    /** Remove the fallback staged and replaced copies of core from the WordPress root. */
     public static function removeLeftovers()
     {
         $root = self::root();
@@ -333,7 +434,7 @@ class WPCB_Core_Swap
             return;
         }
 
-        foreach ([self::stagePath(), self::oldPath()] as $dir) {
+        foreach ([$root . '/' . self::STAGE_DIR, $root . '/' . self::OLD_DIR] as $dir) {
 
             if (is_dir($dir)) {
                 wpcb_delete_path($dir);
@@ -351,6 +452,8 @@ class WPCB_Core_Swap
 
     private function display($path)
     {
-        return ltrim(substr($path, strlen(self::root())), '/');
+        $root = self::root() . '/';
+
+        return strpos($path, $root) === 0 ? substr($path, strlen($root)) : $path;
     }
 }

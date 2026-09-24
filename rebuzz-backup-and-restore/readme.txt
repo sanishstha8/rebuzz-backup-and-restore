@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.5.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,17 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 
 == Changelog ==
 
+= 1.5.1 =
+* Fixed: restoring a backup made on a different WordPress version could send wp-admin to the "Database Update Required" screen. WordPress core used to be copied file by file across many requests, so the site ran a mix of old and new core, and new core against the old database. Core is now swapped in by folder renames in one request, together with the database; if the database swap fails, the previous core is put back.
+* Fixed: before any plugin, theme or upload is overwritten, the restore now checks that WordPress core can actually be swapped on this server, and stops with the site unchanged if it can't.
+* Fixed: on Windows servers, the core swap could not rename wp-admin while the restore request was running from it. It now swaps that folder's contents one by one instead.
+* Fixed: the new core is swapped in straight from the extracted backup, and the old one is moved into the restore's own folder, so no copy of core sits in the website's root folder during a restore - where a server without .htaccess support, such as Nginx, could serve it.
+* Fixed: a PHP crash while WordPress was still loading, part-way through a restore, reported the error but left the restore marked as running and locked. It now marks the restore failed, puts plugins back and releases the lock.
+* Fixed: a restore killed outright by the host no longer blocks new restores until its record expires; one with no progress for 10 minutes is treated as stopped, as backups already were.
+* Fixed: database export and URL rewrite batches are sized from the real size of the rows about to be read, not from the table's average row length, so a run of small rows followed by very large ones can no longer exhaust PHP's memory limit.
+* Changed: crash messages only suggest raising the time or memory limit when that is what the error actually was.
+* Added: the restore screen warns before a restore when the backup was made on a different WordPress version from this site.
+
 = 1.5.0 =
 * Fixed: a failed restore no longer leaves a half-replaced database. The backup is now imported into temporary staging tables while your live site stays untouched, and only swapped in - all tables at once - after every file is in place. If the import fails, the site is exactly as it was.
 * Fixed: the database is now imported before any file is overwritten, so a database error can no longer leave new files running on the old database.
@@ -124,6 +135,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.5.1 =
+Restoring a backup from a different WordPress version no longer sends wp-admin to the database update screen, and a restore that cannot replace WordPress core now stops before changing anything. Also fixes restores on Windows servers and memory errors on tables with very large rows. Recommended for everyone.
 
 = 1.5.0 =
 Restores are now all-or-nothing for the database: a failed import leaves your site untouched. Also fixes restores involving database views, MySQL 8 collations and DEFINER clauses, and a crash that left all plugins deactivated. Recommended for everyone.

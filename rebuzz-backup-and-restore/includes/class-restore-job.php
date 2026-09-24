@@ -727,7 +727,7 @@ class WPCB_Restore_Job
                 $this->logger->log('Database swap failed: ' . $swap['error']);
 
                 if ($withCore && $core->rollback() === false) {
-                    $this->logger->log('Could not put the previous WordPress core back after the failed database swap - see ' . WPCB_Core_Swap::OLD_DIR . '.');
+                    $this->logger->log('Could not put the previous WordPress core back after the failed database swap - it is in ' . $core->oldPath() . '.');
                 }
 
                 return $this->fail(sprintf(
@@ -1887,9 +1887,11 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 5: copy the backup's core into WPCB_Core_Swap::STAGE_DIR,
-     * in batches. Nothing live is touched, so a failure here - usually
-     * a full disk - leaves the site as it was.
+     * Step 5: get the backup's core ready to swap in - straight from the
+     * extracted backup where the filesystem allows, else copied in
+     * batches into WPCB_Core_Swap::STAGE_DIR - then check the swap can
+     * actually run. Nothing live is touched yet, so a failure here
+     * leaves the site as it was; after this, step 6 overwrites files.
      */
     private function stepStageCore()
     {
@@ -1910,11 +1912,31 @@ class WPCB_Restore_Job
             return true;
         }
 
-        if ((int) $state['position'] === 0 && !WPCB_Core_Swap::prepareStage()) {
-            return $this->fail(__('Could not create a folder for the restored WordPress core next to the live one - check that the WordPress root folder is writable. Your site has not been changed.', 'rebuzz-backup-and-restore'));
+        $core = new WPCB_Core_Swap($workspace);
+
+        if (!$workspace->exists(WPCB_Core_Swap::PATHS)) {
+
+            $mode = $core->prepare($workspace->file('files'));
+
+            if ($mode === false) {
+                return $this->fail(__('Could not create a folder for the restored WordPress core next to the live one - check that the WordPress root folder is writable. Your site has not been changed.', 'rebuzz-backup-and-restore'));
+            }
+
+            if ($mode === 'in_place') {
+
+                // Nothing to copy: swap() renames core straight out of the extracted backup.
+                $state['position'] = $state['total'];
+                $workspace->put('core.state.json', $state);
+
+                $this->logger->log('WordPress core will be swapped in straight from the extracted backup, which is on the same filesystem as the site.');
+
+            } else {
+
+                $this->logger->log('The restore workspace is on a different filesystem from the site, so WordPress core is copied next to the live one to be swapped in.');
+            }
         }
 
-        $copy = $this->copyListedFiles($workspace, 'core-files.txt', 'core.state.json', WPCB_Core_Swap::stagePath());
+        $copy = $this->copyListedFiles($workspace, 'core-files.txt', 'core.state.json', $core->stagePath());
 
         if ($copy === false) {
             return false;
@@ -1948,7 +1970,20 @@ class WPCB_Restore_Job
             ));
         }
 
-        $this->logger->log("WordPress core staged: {$copy['total']} files, to be swapped in together with the database.");
+        $blocked = $core->preflight();
+
+        if ($blocked !== null) {
+
+            $this->logger->log('WordPress core swap preflight failed: ' . $blocked);
+
+            return $this->fail(sprintf(
+                /* translators: %s: what prevents the swap, e.g. "wp-admin is not writable" */
+                __('WordPress core cannot be replaced on this server: %s. Your site has not been changed.', 'rebuzz-backup-and-restore'),
+                $blocked
+            ));
+        }
+
+        $this->logger->log("WordPress core staged: {$copy['total']} files, to be swapped in together with the database. Preflight passed.");
 
         $this->job->update([
             'status' => 'running',
@@ -2760,7 +2795,7 @@ class WPCB_Restore_Job
 
         if ($undone === false) {
 
-            $this->logger->log('Could not put the previous WordPress core back after the failed restore. It is in ' . WPCB_Core_Swap::OLD_DIR . ' in the WordPress root folder - move wp-admin, wp-includes and the *.php files from there back into place.');
+            $this->logger->log('Could not put the previous WordPress core back after the failed restore. It is in ' . $core->oldPath() . ' - move wp-admin, wp-includes and the *.php files from there back into the WordPress root folder.');
 
             return;
         }

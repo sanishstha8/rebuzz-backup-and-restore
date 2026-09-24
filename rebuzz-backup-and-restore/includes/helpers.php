@@ -1996,30 +1996,77 @@ function wpcb_extend_time_limit($seconds)
 }
 
 /**
- * First batch size for walking $table, sized so one batch holds about
- * $targetBytes going by the table's average row length.
+ * First batch size for walking a table. Deliberately small and not
+ * sized from Avg_row_length: that is an estimate (and 0 or stale on
+ * many tables), and one wrong guess on a table of big rows runs out of
+ * memory. Batches grow from what they actually measure.
  */
-function wpcb_initial_batch_rows($table, $targetBytes, $maxRows)
+function wpcb_initial_batch_rows($maxRows)
 {
-    global $wpdb;
-
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- table statistics; prepared, nothing to cache.
-    $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS LIKE %s', $wpdb->esc_like($table)), ARRAY_A);
-
-    $average = isset($status['Avg_row_length']) ? (int) $status['Avg_row_length'] : 0;
-
-    if ($average <= 0) {
-        return (int) $maxRows;
-    }
-
-    return max(1, min((int) $maxRows, (int) floor($targetBytes / $average)));
+    return max(1, min(16, (int) $maxRows));
 }
 
 /**
- * Next batch size given how many bytes the last one actually held.
- * Averages hide the odd huge row, so this corrects as it goes; growth
- * is capped at double per batch so one small batch can't jump straight
- * back to a size that runs out of memory.
+ * True if any of $types (SHOW COLUMNS "Type" values) can hold a value
+ * past the 64 KB MySQL allows a row's other columns in total - such a
+ * table must have each batch sized by wpcb_rows_within_bytes(), since
+ * growing from the last batch's size can't see a huge row coming.
+ */
+function wpcb_has_large_columns(array $types)
+{
+    foreach ($types as $type) {
+
+        if (preg_match('/text|blob|json/i', (string) $type)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * SELECT expression for the stored size of $columns, aliased wpcb_len -
+ * read by the server without sending the values themselves.
+ */
+function wpcb_length_select(array $columns)
+{
+    $lengths = array_map(function ($column) {
+        return 'COALESCE(LENGTH(`' . str_replace('`', '``', $column) . '`), 0)';
+    }, $columns);
+
+    return (empty($lengths) ? '0' : implode(' + ', $lengths)) . ' AS `wpcb_len`';
+}
+
+/**
+ * How many of the next rows, with these sizes, fit in $targetBytes -
+ * at least 1, since a single row bigger than the target still has to
+ * be read.
+ *
+ * @param int[] $lengths Sizes of the next rows, in order.
+ */
+function wpcb_rows_within_bytes(array $lengths, $targetBytes)
+{
+    $total = 0;
+    $rows = 0;
+
+    foreach ($lengths as $length) {
+
+        $total += (int) $length;
+
+        if ($rows > 0 && $total > $targetBytes) {
+            break;
+        }
+
+        $rows++;
+    }
+
+    return max(1, $rows);
+}
+
+/**
+ * Next batch size given how many bytes the last one actually held, for
+ * tables without large columns (see wpcb_has_large_columns()), where
+ * no row can exceed 64 KB. Growth is capped at double per batch.
  */
 function wpcb_adapt_batch_rows($rows, $batchBytes, $targetBytes, $maxRows)
 {
