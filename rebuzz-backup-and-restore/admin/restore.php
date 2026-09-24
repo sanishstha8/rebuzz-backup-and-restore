@@ -54,7 +54,7 @@ $zip = wpcb_backups_dir() . '/' . $file;
         <form
             method="post"
             enctype="multipart/form-data"
-            action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            action="<?php echo esc_url(admin_url('admin-post.php?action=wpcb_upload_backup')); ?>">
 
             <?php wp_nonce_field('wpcb_upload_backup'); ?>
             <input type="hidden" name="action" value="wpcb_upload_backup">

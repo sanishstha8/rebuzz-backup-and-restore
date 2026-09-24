@@ -1263,19 +1263,29 @@ function wpcb_check_restore_write_permissions()
  * which this cannot see at all.
  *
  * So a pass here means "not obviously impossible", not "this will
- * work". What actually reports a genuine out-of-space condition is
+ * work". What closes that gap before a restore starts is
+ * wpcb_probe_restore_storage(), which writes real bytes and real files
+ * instead of trusting this arithmetic; and what reports a genuine
+ * out-of-space condition once a restore is under way is
  * WPCB_Extractor::extractionFailureReason(), which reads the real
  * error from the failed write.
  *
- * @return array{uncompressed: int, free: int, required: int, ok: bool}
+ * @return array{uncompressed: int, free: int, required: int, ok: bool,
+ *               entries: int, measured: bool}
  */
 function wpcb_check_restore_disk_space($zipPath)
 {
     $zip = new ZipArchive();
 
     $uncompressed = 0;
+    $entries = 0;
 
     if ($zip->open($zipPath) === true) {
+
+        // Captured while the archive is already open, so the probe that
+        // runs next can scale itself to the archive without paying for a
+        // second open.
+        $entries = (int) $zip->numFiles;
 
         for ($i = 0; $i < $zip->numFiles; $i++) {
 
@@ -1292,15 +1302,27 @@ function wpcb_check_restore_disk_space($zipPath)
     // 15% margin - filesystem block overhead adds up across many files.
     $required = (int) ($uncompressed * 1.15);
 
-    // Measured at the restore workspace's real location (wp_upload_dir()'s
-    // basedir), not ABSPATH - on hosts where uploads is a separate mount
-    // (containerized deployments, a custom UPLOADS constant, network/
-    // object storage), that's a different filesystem than the code
-    // directory, and the extracted files land there, not under ABSPATH.
+    // Measured at the restore workspace's real location, not ABSPATH - on
+    // hosts where it is a separate mount (containerized deployments, a
+    // custom UPLOADS constant, network/object storage), that's a different
+    // filesystem than the code directory, and the extracted files land
+    // there, not under ABSPATH.
+    //
+    // That location is wpcb_data_dir(), not wp_upload_dir()'s basedir:
+    // WPCB_Restore_Workspace builds its directory under the former, and
+    // when WPCB_BACKUP_DIR is defined - the arrangement the readme
+    // actively recommends for Nginx - the two are different directories
+    // and can be different mounts. Measuring the wrong one reports free
+    // space for a filesystem the restore never writes to.
+    //
     // false (not 0) means disk_free_space() couldn't measure - treat
     // as passing. An actual 0 means disk is really full - should fail.
-    $upload = wp_upload_dir();
-    $restoreDir = !empty($upload['basedir']) ? $upload['basedir'] : ABSPATH;
+    $restoreDir = wpcb_data_dir();
+
+    if (!is_dir($restoreDir)) {
+        $upload = wp_upload_dir();
+        $restoreDir = !empty($upload['basedir']) ? $upload['basedir'] : ABSPATH;
+    }
 
     $freeRaw = @disk_free_space($restoreDir);
     $unknown = ($freeRaw === false);
@@ -1310,8 +1332,306 @@ function wpcb_check_restore_disk_space($zipPath)
         'uncompressed' => $uncompressed,
         'free'         => $free,
         'required'     => $required,
-        'ok'           => $unknown ? true : ($free >= $required)
+        'ok'           => $unknown ? true : ($free >= $required),
+        'entries'      => $entries,
+        // Whether 'free' is a real measurement or a placeholder zero, so
+        // the caller can log why this check passed.
+        'measured'     => !$unknown
     ];
+}
+
+/**
+ * What the restore storage probe asks the filesystem for. Both stay well
+ * under one extraction batch (WPCB_Extractor::BATCH_SIZE, 2000 entries), so
+ * anything failing the probe would have failed seconds into extracting
+ * anyway - raising them risks blocking restores that would have worked.
+ * Override in wp-config.php; WPCB_RESTORE_PROBE_FILES of 0 disables it.
+ */
+if (!defined('WPCB_RESTORE_PROBE_BYTES')) {
+    define('WPCB_RESTORE_PROBE_BYTES', 4194304); // 4MB
+}
+
+if (!defined('WPCB_RESTORE_PROBE_FILES')) {
+    define('WPCB_RESTORE_PROBE_FILES', 200);
+}
+
+/** error_get_last()'s message, or '' when there isn't one. */
+function wpcb_last_error_text()
+{
+    $error = error_get_last();
+
+    return isset($error['message']) ? (string) $error['message'] : '';
+}
+
+/**
+ * How many files and folders restoring $zipPath creates, read from
+ * manifest.json without extracting. Falls back to the archive's own entry
+ * count for pre-1.4 backups, which carry no statistics block.
+ *
+ * @return array{files: int, directories: int, total: int, source: string}
+ */
+function wpcb_backup_inode_estimate($zipPath, $entries = 0)
+{
+    $files = 0;
+    $directories = 0;
+    $source = 'unknown';
+
+    $inspector = new WPCB_Backup_Inspector();
+    $result = $inspector->inspect($zipPath);
+
+    if (!empty($result['success']) && isset($result['manifest']['statistics'])) {
+
+        $stats = $result['manifest']['statistics'];
+
+        $files = isset($stats['files']) ? (int) $stats['files'] : 0;
+        $directories = isset($stats['directories']) ? (int) $stats['directories'] : 0;
+
+        if ($files > 0) {
+            $source = 'manifest';
+        }
+    }
+
+    // No usable manifest: every ZIP entry becomes at least one inode.
+    if ($files < 1 && $entries > 0) {
+        $files = (int) $entries;
+        $source = 'archive';
+    }
+
+    return [
+        'files'       => $files,
+        'directories' => $directories,
+        'total'       => $files + $directories,
+        'source'      => $source
+    ];
+}
+
+/**
+ * Whether this account can actually write what a restore needs, tested
+ * rather than calculated. is_writable() and disk_free_space() both pass on
+ * a shared account that is over its storage or inode quota; writing real
+ * bytes and creating real files does not.
+ *
+ * @return array{status: string, kind: string, bytes: int, expected: int,
+ *               files: int, attempted: int, dir: string, error: string}
+ *               status 'unknown' never blocks a restore - a check that
+ *               could not run proves nothing.
+ */
+function wpcb_probe_restore_storage($expectedEntries = 0)
+{
+    $unknown = [
+        'status'    => 'unknown',
+        'kind'      => '',
+        'bytes'     => 0,
+        'expected'  => (int) WPCB_RESTORE_PROBE_BYTES,
+        'files'     => 0,
+        'attempted' => 0,
+        'dir'       => '',
+        'error'     => ''
+    ];
+
+    if ((int) WPCB_RESTORE_PROBE_FILES < 1) {
+        return $unknown;
+    }
+
+    $base = wpcb_data_dir();
+
+    // preflight-*, never restore-*: wpcb_restore_workspace_dirs() globs the
+    // latter and would sweep this away mid-probe as failed-restore debris.
+    foreach (glob($base . '/preflight-*', GLOB_ONLYDIR) ?: [] as $stale) {
+        wpcb_delete_path($stale);
+    }
+
+    $dir = $base . '/preflight-' . wp_generate_password(12, false, false);
+
+    // A directory that cannot be created is outside this probe's competence;
+    // WPCB_Restore_Workspace fails on it at step 0 for free anyway.
+    if (!wp_mkdir_p($dir)) {
+        $unknown['dir'] = $dir;
+        $unknown['error'] = wpcb_last_error_text();
+
+        return $unknown;
+    }
+
+    $result = wpcb_run_restore_storage_probe($dir, $expectedEntries);
+
+    // Every worker path returns through here, so none of them can skip cleanup.
+    wpcb_delete_path($dir);
+
+    return $result;
+}
+
+/**
+ * The probe itself. How far it gets is the diagnosis: a refused open means
+ * the folder rejects writes outright, a short write means no room, and small
+ * files failing after a clean 4MB write means a file-count limit. Matching
+ * errno text would be locale-dependent; this is not.
+ */
+function wpcb_run_restore_storage_probe($dir, $expectedEntries)
+{
+    $started = microtime(true);
+    $budget = 3.0;
+    $target = (int) WPCB_RESTORE_PROBE_BYTES;
+
+    $result = [
+        'status'    => 'failed',
+        'kind'      => 'write',
+        'bytes'     => 0,
+        'expected'  => $target,
+        'files'     => 0,
+        'attempted' => 0,
+        'dir'       => $dir,
+        'error'     => ''
+    ];
+
+    error_clear_last();
+
+    $path = $dir . '/bytes.tmp';
+
+    // phpcs:disable WordPress.WP.AlternativeFunctions -- probing the real filesystem is the point; WP_Filesystem would abstract away the failure being measured.
+    $handle = @fopen($path, 'wb');
+
+    if ($handle === false) {
+        $result['error'] = wpcb_last_error_text();
+
+        return $result;
+    }
+
+    $chunk = str_repeat('0', 1048576);
+    $written = 0;
+    $short = false;
+
+    while ($written < $target) {
+
+        $take = min(strlen($chunk), $target - $written);
+        $bytes = @fwrite($handle, substr($chunk, 0, $take));
+
+        if ($bytes === false || $bytes !== $take) {
+            $short = true;
+            break;
+        }
+
+        $written += $bytes;
+    }
+
+    @fflush($handle);
+    $closed = @fclose($handle);
+    // phpcs:enable WordPress.WP.AlternativeFunctions
+
+    clearstatcache(true, $path);
+    $onDisk = @filesize($path);
+    $result['bytes'] = ($onDisk === false) ? 0 : (int) $onDisk;
+
+    if ($short || !$closed || $result['bytes'] !== $target) {
+        $result['kind'] = 'space';
+        $result['error'] = wpcb_last_error_text();
+
+        return $result;
+    }
+
+    // Three levels deep: the failure this exists to catch hit a deep vendor
+    // path, and mkdir is what fails first once inodes run out.
+    $deep = $dir . '/deep/a/b';
+
+    if (!wp_mkdir_p($deep)) {
+        $result['kind'] = 'inode';
+        $result['error'] = wpcb_last_error_text();
+
+        return $result;
+    }
+
+    $want = min(
+        (int) WPCB_RESTORE_PROBE_FILES,
+        max(20, (int) ceil(((int) $expectedEntries) / 500))
+    );
+
+    $result['attempted'] = $want;
+
+    for ($i = 0; $i < $want; $i++) {
+
+        // A slow host is not a full one - running out of time passes.
+        if ((microtime(true) - $started) >= $budget) {
+            break;
+        }
+
+        if (@file_put_contents($deep . '/p' . $i, 'x') !== 1) {
+            $result['kind'] = 'inode';
+            $result['files'] = $i;
+            $result['error'] = wpcb_last_error_text();
+
+            return $result;
+        }
+
+        $result['files'] = $i + 1;
+    }
+
+    $result['status'] = 'ok';
+    $result['kind'] = '';
+
+    return $result;
+}
+
+/**
+ * The refusal shown when wpcb_probe_restore_storage() fails, phrased in
+ * terms of what the person can check rather than errno terms.
+ */
+function wpcb_restore_storage_probe_message($probe, $inodes, $space)
+{
+    $lead = __('This restore would almost certainly fail part-way through, so it has not been started.', 'rebuzz-backup-and-restore');
+
+    // True at every call site: the refusal happens before the job is created,
+    // and extraction stages under uploads rather than over the live site.
+    $safe = __('Nothing on your site has been changed.', 'rebuzz-backup-and-restore');
+
+    if ($probe['kind'] === 'space') {
+
+        return $lead . "\n\n" . sprintf(
+            /* translators: 1: amount actually written, 2: amount the test tried to write */
+            __('A test write into the plugin\'s storage folder stopped after %1$s of %2$s. That is what happens when a hosting account has reached its storage quota. Note that a host often reports far more free space than your account is actually allowed to use.', 'rebuzz-backup-and-restore'),
+            size_format($probe['bytes']),
+            size_format($probe['expected'])
+        ) . "\n\n" . sprintf(
+            /* translators: %s: free space the restore needs */
+            __('Restoring this backup needs roughly %s of free space.', 'rebuzz-backup-and-restore'),
+            size_format($space['required'])
+        ) . ' ' . $safe;
+    }
+
+    if ($probe['kind'] === 'inode') {
+
+        $message = $lead . "\n\n" . sprintf(
+            /* translators: 1: test files created, 2: test files attempted */
+            __('A test write into the plugin\'s storage folder created only %1$s of %2$s small test files. Disk space and folder permissions both tested fine, which points at this hosting account reaching its file-count limit - cPanel calls this "File Usage" or "Inodes".', 'rebuzz-backup-and-restore'),
+            number_format_i18n($probe['files']),
+            number_format_i18n($probe['attempted'])
+        );
+
+        // Omitted rather than printed as zero for backups with no statistics.
+        if ($inodes['files'] > 0 && $inodes['directories'] > 0) {
+
+            $message .= "\n\n" . sprintf(
+                /* translators: 1: number of files in the backup, 2: number of folders */
+                __('This backup contains %1$s files and %2$s folders, and a restore writes them twice: once into a staging folder, then once into the live site.', 'rebuzz-backup-and-restore'),
+                number_format_i18n($inodes['files']),
+                number_format_i18n($inodes['directories'])
+            );
+
+        } elseif ($inodes['files'] > 0) {
+
+            $message .= "\n\n" . sprintf(
+                /* translators: %s: number of files in the backup */
+                __('This backup contains %s files, and a restore writes them twice: once into a staging folder, then once into the live site.', 'rebuzz-backup-and-restore'),
+                number_format_i18n($inodes['files'])
+            );
+        }
+
+        return $message . "\n\n" . $safe . ' ' . __('Check your account\'s file usage against its limit in your hosting control panel, delete files you no longer need, then try again.', 'rebuzz-backup-and-restore');
+    }
+
+    return sprintf(
+        /* translators: %s: absolute path to the plugin's storage folder */
+        __('This restore has not been started: the plugin\'s storage folder (%s) passed a permissions check but could not actually be written to.', 'rebuzz-backup-and-restore'),
+        $probe['dir']
+    ) . "\n\n" . __('A folder can look writable and still reject every write when the hosting account is out of disk space or has reached its file limit. Check both in your hosting control panel, then try again.', 'rebuzz-backup-and-restore') . ' ' . $safe;
 }
 
 /**
@@ -1584,11 +1904,116 @@ function wpcb_backup_lock_check()
     $job = new WPCB_Job($jobId);
     $state = $job->get();
 
-    if (($state['status'] ?? '') === 'running') {
-        return $jobId;
+    if (($state['status'] ?? '') !== 'running') {
+        return null;
     }
 
-    return null;
+    /*
+     * A backup killed outright (host kill, OOM inside the shutdown
+     * handler) never gets marked failed, and used to block new backups
+     * until its transient expired an hour later. No progress for this
+     * long, and no step mid-flight, means nothing is running any more.
+     */
+    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
+
+    if (
+        $lastSeen > 0 &&
+        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
+        !$job->isProcessing()
+    ) {
+        return null;
+    }
+
+    return $jobId;
+}
+
+/**
+ * Seconds without progress after which a "running" backup is treated
+ * as dead - see wpcb_backup_lock_check().
+ */
+if (!defined('WPCB_STALE_JOB_SECONDS')) {
+    define('WPCB_STALE_JOB_SECONDS', 10 * MINUTE_IN_SECONDS);
+}
+
+/**
+ * Make $wpdb usable again after a fatal error interrupted a query -
+ * frees the half-read result, and reconnects if that isn't enough.
+ * For shutdown handlers only.
+ */
+function wpcb_recover_db_connection()
+{
+    global $wpdb;
+
+    if (!isset($wpdb) || !is_object($wpdb)) {
+        return;
+    }
+
+    $wpdb->flush();
+
+    $suppressed = $wpdb->suppress_errors(true);
+    $ok = ($wpdb->query('SELECT 1') !== false && $wpdb->last_error === '');
+
+    if (!$ok) {
+        $wpdb->close();
+        $wpdb->db_connect(false);
+    } else {
+        // A crash mid-import leaves autocommit off: the handler's own "failed" update would never be saved.
+        $wpdb->query('ROLLBACK');
+        $wpdb->query('SET SESSION autocommit = 1');
+    }
+
+    $wpdb->suppress_errors($suppressed);
+}
+
+/**
+ * Best-effort set_time_limit(). Hosts often list it in disable_functions,
+ * and on PHP 8 calling a disabled function is a fatal error that "@"
+ * doesn't suppress - so every step would crash. The chunked steps'
+ * time budgets keep them inside the default limit either way.
+ */
+function wpcb_extend_time_limit($seconds)
+{
+    if (function_exists('set_time_limit')) {
+        // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- per-request and best-effort; see above.
+        @set_time_limit($seconds);
+    }
+}
+
+/**
+ * First batch size for walking $table, sized so one batch holds about
+ * $targetBytes going by the table's average row length.
+ */
+function wpcb_initial_batch_rows($table, $targetBytes, $maxRows)
+{
+    global $wpdb;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- table statistics; prepared, nothing to cache.
+    $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS LIKE %s', $wpdb->esc_like($table)), ARRAY_A);
+
+    $average = isset($status['Avg_row_length']) ? (int) $status['Avg_row_length'] : 0;
+
+    if ($average <= 0) {
+        return (int) $maxRows;
+    }
+
+    return max(1, min((int) $maxRows, (int) floor($targetBytes / $average)));
+}
+
+/**
+ * Next batch size given how many bytes the last one actually held.
+ * Averages hide the odd huge row, so this corrects as it goes; growth
+ * is capped at double per batch so one small batch can't jump straight
+ * back to a size that runs out of memory.
+ */
+function wpcb_adapt_batch_rows($rows, $batchBytes, $targetBytes, $maxRows)
+{
+    $rows = max(1, (int) $rows);
+
+    $next = $batchBytes > 0
+        ? min((int) floor($rows * $targetBytes / $batchBytes), $rows * 2)
+        : $rows * 2;
+
+    return max(1, min((int) $maxRows, $next));
 }
 
 /**

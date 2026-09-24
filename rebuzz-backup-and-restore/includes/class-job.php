@@ -69,6 +69,9 @@ class WPCB_Job
             $values
         );
 
+        // Last sign of life; wpcb_backup_lock_check() uses it to spot a dead job.
+        $this->data['heartbeat'] = time();
+
         $this->refreshTiming();
 
         $this->save();
