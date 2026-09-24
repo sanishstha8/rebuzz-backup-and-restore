@@ -1904,11 +1904,116 @@ function wpcb_backup_lock_check()
     $job = new WPCB_Job($jobId);
     $state = $job->get();
 
-    if (($state['status'] ?? '') === 'running') {
-        return $jobId;
+    if (($state['status'] ?? '') !== 'running') {
+        return null;
     }
 
-    return null;
+    /*
+     * A backup killed outright (host kill, OOM inside the shutdown
+     * handler) never gets marked failed, and used to block new backups
+     * until its transient expired an hour later. No progress for this
+     * long, and no step mid-flight, means nothing is running any more.
+     */
+    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
+
+    if (
+        $lastSeen > 0 &&
+        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
+        !$job->isProcessing()
+    ) {
+        return null;
+    }
+
+    return $jobId;
+}
+
+/**
+ * Seconds without progress after which a "running" backup is treated
+ * as dead - see wpcb_backup_lock_check().
+ */
+if (!defined('WPCB_STALE_JOB_SECONDS')) {
+    define('WPCB_STALE_JOB_SECONDS', 10 * MINUTE_IN_SECONDS);
+}
+
+/**
+ * Make $wpdb usable again after a fatal error interrupted a query -
+ * frees the half-read result, and reconnects if that isn't enough.
+ * For shutdown handlers only.
+ */
+function wpcb_recover_db_connection()
+{
+    global $wpdb;
+
+    if (!isset($wpdb) || !is_object($wpdb)) {
+        return;
+    }
+
+    $wpdb->flush();
+
+    $suppressed = $wpdb->suppress_errors(true);
+    $ok = ($wpdb->query('SELECT 1') !== false && $wpdb->last_error === '');
+
+    if (!$ok) {
+        $wpdb->close();
+        $wpdb->db_connect(false);
+    } else {
+        // A crash mid-import leaves autocommit off: the handler's own "failed" update would never be saved.
+        $wpdb->query('ROLLBACK');
+        $wpdb->query('SET SESSION autocommit = 1');
+    }
+
+    $wpdb->suppress_errors($suppressed);
+}
+
+/**
+ * Best-effort set_time_limit(). Hosts often list it in disable_functions,
+ * and on PHP 8 calling a disabled function is a fatal error that "@"
+ * doesn't suppress - so every step would crash. The chunked steps'
+ * time budgets keep them inside the default limit either way.
+ */
+function wpcb_extend_time_limit($seconds)
+{
+    if (function_exists('set_time_limit')) {
+        // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- per-request and best-effort; see above.
+        @set_time_limit($seconds);
+    }
+}
+
+/**
+ * First batch size for walking $table, sized so one batch holds about
+ * $targetBytes going by the table's average row length.
+ */
+function wpcb_initial_batch_rows($table, $targetBytes, $maxRows)
+{
+    global $wpdb;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- table statistics; prepared, nothing to cache.
+    $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS LIKE %s', $wpdb->esc_like($table)), ARRAY_A);
+
+    $average = isset($status['Avg_row_length']) ? (int) $status['Avg_row_length'] : 0;
+
+    if ($average <= 0) {
+        return (int) $maxRows;
+    }
+
+    return max(1, min((int) $maxRows, (int) floor($targetBytes / $average)));
+}
+
+/**
+ * Next batch size given how many bytes the last one actually held.
+ * Averages hide the odd huge row, so this corrects as it goes; growth
+ * is capped at double per batch so one small batch can't jump straight
+ * back to a size that runs out of memory.
+ */
+function wpcb_adapt_batch_rows($rows, $batchBytes, $targetBytes, $maxRows)
+{
+    $rows = max(1, (int) $rows);
+
+    $next = $batchBytes > 0
+        ? min((int) floor($rows * $targetBytes / $batchBytes), $rows * 2)
+        : $rows * 2;
+
+    return max(1, min((int) $maxRows, $next));
 }
 
 /**

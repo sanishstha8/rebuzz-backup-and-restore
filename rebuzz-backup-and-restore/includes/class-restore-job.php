@@ -12,16 +12,19 @@ if (!defined('ABSPATH')) {
  *   0 - Extract ZIP into a restore workspace.
  *   1 - Validate manifest.json and DB checksum.
  *   2 - Verify each file's checksum before touching anything live.
- *   3 - Build list of files to restore.
- *   4 - Copy files back into place.
- *   5 - Import database.sql.
- *   6 - Rewrite old domain references (skipped if same domain).
- *   7+ - Finish: clean up workspace, report success.
+ *   3 - Import database.sql into staging tables (live DB untouched).
+ *   4 - Build list of files to restore.
+ *   5 - Copy files back into place.
+ *   6 - Swap the staging tables in with one atomic RENAME TABLE.
+ *   7 - Rewrite old domain references (skipped if same domain).
+ *   8+ - Finish: clean up workspace, report success.
  *
- * Files are restored before the database (not the more obvious
- * order) so active_plugins/theme options never briefly point at
- * files that don't exist on disk yet - avoids WordPress deactivating
- * plugins mid-restore when it can't find them.
+ * Everything that can fail on the database - a bad collation, a
+ * DEFINER, a full disk - happens in step 3, before any file is
+ * overwritten, so a database failure leaves the site exactly as it
+ * was. The swap waits until the files are in place so active_plugins/
+ * theme options never point at files that aren't on disk yet - which
+ * would have WordPress deactivating plugins mid-restore.
  */
 // phpcs:disable WordPress.WP.AlternativeFunctions -- WP_Filesystem has no streaming API; archives are moved in chunks to stay inside memory limits.
 // phpcs:disable PluginCheck.CodeAnalysis.WriteFile -- restoring a site means writing its files back under ABSPATH; that is the feature.
@@ -33,7 +36,6 @@ if (!defined('ABSPATH')) {
  * would mean any query added later went unchecked. Each of the three
  * carries its own justification instead.
  */
-// phpcs:disable Squiz.PHP.DiscouragedFunctions -- set_time_limit() keeps one chunked step inside the host's timeout; it is per-request and best-effort.
 
 class WPCB_Restore_Job
 {
@@ -119,15 +121,18 @@ class WPCB_Restore_Job
                 return $this->stepVerifyFiles();
 
             case 3:
-                return $this->stepScanFiles();
+                return $this->stepStageDatabase();
 
             case 4:
-                return $this->stepRestoreFiles();
+                return $this->stepScanFiles();
 
             case 5:
-                return $this->stepRestoreDatabase();
+                return $this->stepRestoreFiles();
 
             case 6:
+                return $this->stepSwapDatabase();
+
+            case 7:
                 return $this->stepRewriteUrls();
 
             default:
@@ -142,7 +147,7 @@ class WPCB_Restore_Job
      */
     private function stepExtract()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $state = $this->job->get();
 
@@ -348,7 +353,7 @@ class WPCB_Restore_Job
      */
     private function stepVerifyFiles()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $startTime = microtime(true);
 
@@ -503,14 +508,14 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 5: import database.sql in chunks. Runs after files are
-     * copied - see class docblock for why.
+     * Step 3: import database.sql in chunks into staging tables (see
+     * WPCB_Database::import()). Nothing live is touched, so a failure
+     * here only has staging tables to drop - see the class docblock
+     * for why this runs before the file copy.
      */
-    private function stepRestoreDatabase()
+    private function stepStageDatabase()
     {
-        // Raise time limit here too (was the one step missing it) as
-        // a backstop for a slow import (big index rebuild, loaded server).
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $workspace = $this->workspace();
         $state = $this->job->get();
@@ -521,19 +526,49 @@ class WPCB_Restore_Job
             ? (int) $state['db_offset']
             : 0;
 
-        // Different source table prefix needs rewriting in the dump,
-        // or the import creates orphaned tables nothing reads.
-        // Detected from the dump itself; manifest.json is a fallback.
         $database = new WPCB_Database();
 
-        $sourcePrefix = $database->detectSourcePrefix($dbFile);
+        $plan = $workspace->getJson('stage.plan.json');
 
-        if (empty($sourcePrefix)) {
+        if (empty($plan)) {
 
-            $manifest = json_decode((string) $workspace->get('manifest.json'), true);
+            // Left behind by a restore that died mid-import.
+            $database->dropWorkTables(WPCB_Database::STAGE_PREFIX);
 
-            if (is_array($manifest) && !empty($manifest['wordpress']['table_prefix'])) {
-                $sourcePrefix = $manifest['wordpress']['table_prefix'];
+            // Different source table prefix needs rewriting in the dump,
+            // or the import creates orphaned tables nothing reads.
+            // Detected from the dump itself; manifest.json is a fallback.
+            $sourcePrefix = $database->detectSourcePrefix($dbFile);
+
+            if (empty($sourcePrefix)) {
+
+                $manifest = json_decode((string) $workspace->get('manifest.json'), true);
+
+                if (is_array($manifest) && !empty($manifest['wordpress']['table_prefix'])) {
+                    $sourcePrefix = $manifest['wordpress']['table_prefix'];
+                }
+            }
+
+            $plan = [
+                'source_prefix'    => $sourcePrefix,
+                'dump_tables'      => $database->liveNamesInDump($dbFile, $sourcePrefix),
+                'live_constraints' => $database->liveConstraintNames(),
+                'compat'           => $database->compatibility()
+            ];
+
+            if (!$workspace->put('stage.plan.json', $plan)) {
+                return $this->fail(__('Could not write to the restore workspace - the disk may be full.', 'rebuzz-backup-and-restore'));
+            }
+
+            if (!empty($plan['compat']['collation'])) {
+                $this->logger->log(sprintf(
+                    'This database server has no utf8mb4_0900_* collations (MySQL 8 only); tables using them are created with %s instead.',
+                    $plan['compat']['collation']
+                ));
+            }
+
+            if (!empty($plan['compat']['utf8mb3'])) {
+                $this->logger->log('This database server does not recognise the utf8mb3 character set name; tables using it are created as utf8, its older name.');
             }
         }
 
@@ -541,7 +576,14 @@ class WPCB_Restore_Job
             $dbFile,
             $offset,
             self::DB_BYTES_PER_STEP,
-            $sourcePrefix
+            [
+                'source_prefix'    => $plan['source_prefix'],
+                'staging'          => true,
+                'dump_tables'      => $plan['dump_tables'],
+                'live_constraints' => $plan['live_constraints'],
+                'compat'           => $plan['compat'],
+                'known_views'      => isset($state['dump_views']) ? (array) $state['dump_views'] : []
+            ]
         );
 
         if (!empty($result['error'])) {
@@ -563,82 +605,158 @@ class WPCB_Restore_Job
                 $table
                     ? sprintf(
                         /* translators: 1: name of the database table where the import error occurred, 2: the underlying database error message */
-                        __('Database import failed (table: %1$s): %2$s', 'rebuzz-backup-and-restore'),
+                        __('Database import failed (table: %1$s): %2$s. Your site has not been changed.', 'rebuzz-backup-and-restore'),
                         $table,
                         $result['error']
                     )
                     : sprintf(
                         /* translators: %s: the underlying database error message */
-                        __('Database import failed: %s', 'rebuzz-backup-and-restore'),
+                        __('Database import failed: %s. Your site has not been changed.', 'rebuzz-backup-and-restore'),
                         $result['error']
                     )
             );
         }
 
+        // Keyed by the chunk's start offset, so a retried chunk replaces its entry instead of adding twice.
+        if (!empty($result['deferred'])) {
+
+            $deferred = $workspace->getJson('deferred.json') ?: [];
+            $deferred[(string) $offset] = $result['deferred'];
+
+            if (!$workspace->put('deferred.json', $deferred)) {
+                return $this->fail(__('Could not write to the restore workspace - the disk may be full.', 'rebuzz-backup-and-restore'));
+            }
+        }
+
         $tablesRestored = (isset($state['tables_restored']) ? (int) $state['tables_restored'] : 0)
             + (int) ($result['tables_created'] ?? 0);
 
-        // Restore siteurl/home after every chunk, not just at the
-        // end - an interrupted restore could otherwise strand the
-        // site pointed at the source domain.
-        $this->restorePreservedSiteUrl();
-
-        // Same "every chunk" reasoning - see
-        // restorePreservedAdminIdentity() for why this can't just be
-        // refreshAdminSession().
-        $this->restorePreservedAdminIdentity();
-
-        // Also every chunk: wp_usermeta (login sessions) gets
-        // dropped/recreated at some unknown chunk, which would log
-        // the admin out mid-restore otherwise.
-        $this->refreshAdminSession();
-
-        // active_plugins can also land mid-import, re-activating
-        // every plugin it names immediately - a recurring source of
-        // disruption. isolateActivePlugins() neutralizes all of them
-        // until the whole restore finishes; see its docblock.
-        $this->isolateActivePlugins();
+        $ratio = $result['size'] > 0
+            ? ($result['offset'] / $result['size'])
+            : 1;
 
         if (!$result['finished']) {
 
-            $ratio = $result['size'] > 0
-                ? ($result['offset'] / $result['size'])
-                : 0;
-
-            $progress = 75 + ($ratio * 20);
-
             $this->job->update([
                 'status' => 'running',
-                'step' => 5,
-                'progress' => (int) $progress,
+                'step' => 3,
+                'progress' => (int) (25 + ($ratio * 30)),
                 'message' => sprintf(
                     /* translators: 1: bytes of the database imported so far, 2: total database size */
-                    __('Restoring database (%1$s / %2$s)', 'rebuzz-backup-and-restore'),
+                    __('Importing database (%1$s / %2$s)', 'rebuzz-backup-and-restore'),
                     size_format($result['offset']),
                     size_format($result['size'])
                 ),
                 'db_offset' => $result['offset'],
-                'tables_restored' => $tablesRestored
+                'tables_restored' => $tablesRestored,
+                'dump_views' => $result['views']
             ]);
 
             return true;
         }
 
-        $this->logger->log(sprintf('Database restored: %d table(s).', $tablesRestored));
+        $this->logger->log(sprintf('Database imported into staging tables: %d table(s). The live database is untouched until the files are in place.', $tablesRestored));
 
         $this->job->update([
             'status' => 'running',
-            'step' => 6,
-            'progress' => 90,
-            'message' => __('Database restored.', 'rebuzz-backup-and-restore'),
-            'tables_restored' => $tablesRestored
+            'step' => 4,
+            'progress' => 55,
+            'message' => __('Database imported.', 'rebuzz-backup-and-restore'),
+            'db_offset' => $result['offset'],
+            'tables_restored' => $tablesRestored,
+            'dump_views' => $result['views']
         ]);
 
         return true;
     }
 
     /**
-     * Step 6: rewrite hardcoded old-domain references (post content,
+     * Step 6: swap the staged tables in (one atomic RENAME TABLE), then
+     * redo what the imported tables overwrote: this site's URL, the
+     * admin's login and session, and plugin isolation. Views, triggers
+     * and routines deferred by step 3 run last; a failure there is a
+     * warning, not a failed restore - undoing the swap now would put the
+     * old database back under the new files.
+     */
+    private function stepSwapDatabase()
+    {
+        wpcb_extend_time_limit(60);
+
+        $workspace = $this->workspace();
+        $state = $this->job->get();
+
+        $database = new WPCB_Database();
+
+        $plan = $workspace->getJson('stage.plan.json');
+
+        if (empty($state['db_swapped'])) {
+
+            $swap = $database->swapStaged(!empty($plan['dump_tables']) ? (array) $plan['dump_tables'] : []);
+
+            if (!$swap['ok']) {
+
+                $this->logger->log('Database swap failed: ' . $swap['error']);
+
+                return $this->fail(sprintf(
+                    /* translators: %s: the underlying database error message */
+                    __('Could not switch the restored database in: %s. The previous database is still in place.', 'rebuzz-backup-and-restore'),
+                    $swap['error']
+                ));
+            }
+
+            // Also re-creates the job's transient - the swap replaced the wp_options it lived in.
+            $this->job->update(['db_swapped' => true]);
+
+            $this->logger->log(sprintf('Swapped in the restored database: %d table(s).', count($swap['swapped'])));
+        }
+
+        // Once, right after the swap - see this method's docblock.
+        $this->restorePreservedSiteUrl();
+        $this->restorePreservedAdminIdentity();
+        $this->refreshAdminSession();
+        $this->isolateActivePlugins();
+
+        $deferredFailed = [];
+
+        $deferredChunks = $workspace->getJson('deferred.json');
+
+        if (!empty($deferredChunks) && empty($state['deferred_done'])) {
+
+            ksort($deferredChunks, SORT_NUMERIC);
+
+            $statements = [];
+
+            foreach ($deferredChunks as $chunk) {
+                $statements = array_merge($statements, (array) $chunk);
+            }
+
+            $deferredFailed = $database->runDeferred($statements);
+
+            foreach ($deferredFailed as $error) {
+                $this->logger->log('Could not recreate a view/trigger/routine from the backup: ' . $error);
+            }
+
+            $this->logger->log(sprintf(
+                'Recreated views/triggers/routines from the backup: %d statement(s), %d failed.',
+                count($statements),
+                count($deferredFailed)
+            ));
+        }
+
+        $this->job->update([
+            'status' => 'running',
+            'step' => 7,
+            'progress' => 90,
+            'message' => __('Database restored.', 'rebuzz-backup-and-restore'),
+            'deferred_done' => true,
+            'deferred_failed' => count($deferredFailed) + (int) ($state['deferred_failed'] ?? 0)
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Step 7: rewrite hardcoded old-domain references (post content,
      * GUIDs, serialized values) to this site's domain - see
      * WPCB_Url_Rewriter for why not a plain str_replace(). Complements
      * restorePreservedSiteUrl(), which only fixes siteurl/home
@@ -646,7 +764,7 @@ class WPCB_Restore_Job
      */
     private function stepRewriteUrls()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $workspace = $this->workspace();
         $state = $this->job->get();
@@ -686,7 +804,7 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 7,
+                'step' => 8,
                 'progress' => 98,
                 'message' => __('No domain rewrite needed.', 'rebuzz-backup-and-restore')
             ]);
@@ -711,7 +829,7 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 6,
+                'step' => 7,
                 'progress' => (int) $progress,
                 'message' => sprintf(
                     /* translators: %d: number of database rows changed so far */
@@ -731,7 +849,7 @@ class WPCB_Restore_Job
 
         $this->job->update([
             'status' => 'running',
-            'step' => 7,
+            'step' => 8,
             'progress' => 98,
             'message' => __('Domain references updated.', 'rebuzz-backup-and-restore'),
             'urls_updated' => $result['rows_changed']
@@ -755,9 +873,11 @@ class WPCB_Restore_Job
      * local server can answer, so images and other assets silently fail
      * to load.
      *
-     * Every variant maps to the destination URL exactly as configured,
-     * so the scheme always ends up matching the destination site rather
-     * than being inherited from the source.
+     * The http:// and https:// variants map to the destination URL
+     * exactly as configured, so the scheme always ends up matching the
+     * destination site rather than being inherited from the source. The
+     * // variant stays protocol-relative, since that's what the page
+     * was written to rely on.
      *
      * @param array $pairs search => replace, keyed by source URL.
      * @return array
@@ -780,7 +900,9 @@ class WPCB_Restore_Job
                 $variant = $scheme . $withoutScheme;
 
                 if (!isset($expanded[$variant])) {
-                    $expanded[$variant] = $replace;
+                    $expanded[$variant] = ($scheme === '//')
+                        ? preg_replace('#^https?:(?=//)#i', '', $replace)
+                        : $replace;
                 }
             }
         }
@@ -795,8 +917,8 @@ class WPCB_Restore_Job
      * .htaccess, etc.). Forces active_plugins to just this plugin;
      * the real final list is computed once and saved to job state,
      * then restored by reactivateFinalPlugins() in finish()/fail().
-     * Called on every DB-import chunk (cheap no-op except on the one
-     * chunk where active_plugins actually changes).
+     * Called once, right after stepSwapDatabase() puts the imported
+     * active_plugins in place.
      */
     private function isolateActivePlugins()
     {
@@ -1136,7 +1258,7 @@ class WPCB_Restore_Job
      * of the restore - mu-plugins run unconditionally and
      * isolateActivePlugins() can't stop them (e.g. a host mu-plugin
      * repeatedly rewriting .htaccess mid-restore). Called right after
-     * step 4, before mu-plugin files could be loaded on the next poll.
+     * step 5, before mu-plugin files could be loaded on the next poll.
      * Filenames tracked in job state for reactivateMuPlugins() to
      * restore.
      *
@@ -1354,12 +1476,8 @@ class WPCB_Restore_Job
 
         /*
          * Only write, and only log, when the value has actually been
-         * overwritten. This runs after every database chunk - two dozen
-         * times on a modest site - and previously wrote and logged on
-         * each one regardless, filling restore.log with two dozen
-         * identical lines and burying anything that mattered. The import
-         * only touches wp_options in one of those chunks, so the rest
-         * had nothing to correct.
+         * overwritten - it also runs from fail(), where nothing may have
+         * changed, and a line logged for nothing buries what mattered.
          *
          * Read straight from the table rather than get_option(): the
          * import has just rewritten these rows underneath the cache.
@@ -1519,15 +1637,15 @@ class WPCB_Restore_Job
     const SCAN_BATCH_SIZE = 20000;
 
     /**
-     * Step 3: walk files/ and write relative paths to
-     * restore-files.txt for step 4 to batch-restore. Used to be one
+     * Step 4: walk files/ and write relative paths to
+     * restore-files.txt for step 5 to batch-restore. Used to be one
      * RecursiveIteratorIterator pass, which could exceed PHP's time/
      * memory limit on large sites. Now walks via an explicit stack
      * persisted between calls (SCAN_BATCH_SIZE per call).
      */
     private function stepScanFiles()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $startTime = microtime(true);
 
@@ -1670,8 +1788,8 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 3,
-                'progress' => 27,
+                'step' => 4,
+                'progress' => 56,
                 /* translators: %d: number of files found so far */
                 'message' => sprintf(__('Scanning files (%d found so far)...', 'rebuzz-backup-and-restore'), $count)
             ]);
@@ -1690,8 +1808,8 @@ class WPCB_Restore_Job
 
         $this->job->update([
             'status' => 'running',
-            'step' => 4,
-            'progress' => 30,
+            'step' => 5,
+            'progress' => 58,
             /* translators: %d: total number of files about to be restored */
             'message' => sprintf(__('Preparing to restore %d files.', 'rebuzz-backup-and-restore'), $count),
             'folders_restored' => $folders
@@ -1701,11 +1819,11 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 4: copy files back into place, in fixed-size batches.
+     * Step 5: copy files back into place, in fixed-size batches.
      */
     private function stepRestoreFiles()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $startTime = microtime(true);
 
@@ -1717,8 +1835,8 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 5,
-                'progress' => 75,
+                'step' => 6,
+                'progress' => 85,
                 'message' => __('No files to restore.', 'rebuzz-backup-and-restore')
             ]);
 
@@ -1840,6 +1958,13 @@ class WPCB_Restore_Job
                     );
 
                     $failed++;
+
+                } elseif (
+                    function_exists('opcache_invalidate') &&
+                    substr($relative, -4) === '.php'
+                ) {
+                    // Else the next request runs the cached old code against the new files and fatals.
+                    @opcache_invalidate($destination, true);
                 }
 
                 // See CHECKPOINT_INTERVAL's docblock: bounds how much
@@ -1871,12 +1996,12 @@ class WPCB_Restore_Job
         if (!$finished) {
 
             $progress = $total > 0
-                ? 30 + (($position / $total) * 45)
-                : 75;
+                ? 58 + (($position / $total) * 27)
+                : 85;
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 4,
+                'step' => 5,
                 'progress' => (int) $progress,
                 'message' => sprintf(
                     /* translators: 1: number of files restored so far, 2: total number of files */
@@ -1915,6 +2040,11 @@ class WPCB_Restore_Job
             $this->job->update(['swept' => true]);
         }
 
+        // Covers anything invalidate missed (moved-aside plugins, symlinked paths); @ for opcache.restrict_api.
+        if (function_exists('opcache_reset')) {
+            @opcache_reset();
+        }
+
         if ($failed > 0) {
 
             $this->logger->log(
@@ -1923,7 +2053,7 @@ class WPCB_Restore_Job
         }
 
         // Mu-plugin files exist on disk now, so WP loads them on the
-        // next poll - before DB import. Must disable here since
+        // next poll - before the DB swap. Must disable here since
         // isolateActivePlugins() can't reach mu-plugins.
         $disabledMuPlugins = $this->temporarilyDisableAllMuPlugins();
 
@@ -1931,8 +2061,8 @@ class WPCB_Restore_Job
         // finish() can report it later.
         $this->job->update([
             'status' => 'running',
-            'step' => 5,
-            'progress' => 75,
+            'step' => 6,
+            'progress' => 85,
             'message' => __('Files restored.', 'rebuzz-backup-and-restore'),
             'files_failed' => $failed,
             'files_restored' => $position,
@@ -2174,7 +2304,7 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 6+: clean up the (potentially large) extracted workspace
+     * Step 8+: clean up the (potentially large) extracted workspace
      * and report success.
      */
     private function finish()
@@ -2186,6 +2316,9 @@ class WPCB_Restore_Job
             $workspace = new WPCB_Restore_Workspace($state['workspace']);
             $workspace->cleanup();
         }
+
+        // Normally already gone; catches anything a retried swap left behind.
+        (new WPCB_Database())->dropWorkTables();
 
         $this->restoreCleanup();
 
@@ -2294,6 +2427,15 @@ class WPCB_Restore_Job
             $warnings[] = sprintf(__('%d file(s) could not be copied', 'rebuzz-backup-and-restore'), $failed);
         }
 
+        if (!empty($state['deferred_failed'])) {
+            $warnings[] = sprintf(
+                /* translators: 1: number of database views/triggers/routines, 2: path to the log file, relative to the WordPress root */
+                __('%1$d database view/trigger/routine statement(s) could not be recreated - see %2$s', 'rebuzz-backup-and-restore'),
+                (int) $state['deferred_failed'],
+                wpcb_display_path(wpcb_logs_dir() . '/restore.log')
+            );
+        }
+
         if (!empty($state['missing_plugins'])) {
             $warnings[] = sprintf(
                 /* translators: %s: comma-separated list of plugin files */
@@ -2348,6 +2490,31 @@ class WPCB_Restore_Job
     {
         $this->logger->log('Restore failed: ' . $message);
 
+        $this->cleanupAfterFailure();
+
+        $this->job->update([
+            'status' => 'failed',
+            'message' => $message
+        ]);
+
+        return false;
+    }
+
+    /**
+     * Put the site back into a working state after a failed restore.
+     * Shared by fail() and the crash handler in
+     * WPCB_Admin::guardAgainstFatalError(), so a PHP fatal no longer
+     * leaves every plugin but this one switched off.
+     */
+    public function cleanupAfterFailure()
+    {
+        $state = $this->job->get();
+
+        // Before the swap the live database was never touched; the staging copy is just clutter.
+        if (empty($state['db_swapped'])) {
+            (new WPCB_Database())->dropWorkTables(WPCB_Database::STAGE_PREFIX);
+        }
+
         /*
          * Put any renamed-aside directories back before anything else:
          * reactivateFinalPlugins() below writes active_plugins, and that
@@ -2361,9 +2528,9 @@ class WPCB_Restore_Job
             }
         }
 
-        // If DB import wrote wp_options before failing, siteurl/home
-        // may now point at the source domain. Fix here too so a
-        // failed restore never strands the site there.
+        // If the swap put the backup's wp_options in place before the
+        // failure, siteurl/home may now point at the source domain. Fix
+        // here too so a failed restore never strands the site there.
         $this->restorePreservedSiteUrl();
         $this->restorePreservedAdminIdentity();
 
@@ -2375,12 +2542,5 @@ class WPCB_Restore_Job
         // Release the lock now so a failure never blocks future
         // restores (belt-and-braces with wpcb_restore_lock_check()).
         wpcb_restore_lock_release();
-
-        $this->job->update([
-            'status' => 'failed',
-            'message' => $message
-        ]);
-
-        return false;
     }
 }

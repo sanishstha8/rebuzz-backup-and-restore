@@ -5,7 +5,6 @@ if (!defined('ABSPATH')) {
 }
 
 // phpcs:disable WordPress.WP.AlternativeFunctions -- WP_Filesystem has no streaming API; archives are moved in chunks to stay inside memory limits.
-// phpcs:disable Squiz.PHP.DiscouragedFunctions -- set_time_limit() keeps one chunked step inside the host's timeout; it is per-request and best-effort.
 
 class WPCB_Zip_Batch
 {
@@ -24,7 +23,7 @@ class WPCB_Zip_Batch
     public function process(WPCB_Workspace $workspace)
     {
         // best-effort; some hosts disable this. TIME_BUDGET_SECONDS is the real guard.
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $startTime = microtime(true);
 

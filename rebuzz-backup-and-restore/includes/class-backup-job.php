@@ -5,7 +5,6 @@ if (!defined('ABSPATH')) {
 }
 
 // phpcs:disable WordPress.WP.AlternativeFunctions -- WP_Filesystem has no streaming API; archives are moved in chunks to stay inside memory limits.
-// phpcs:disable Squiz.PHP.DiscouragedFunctions -- set_time_limit() keeps one chunked step inside the host's timeout; it is per-request and best-effort.
 
 class WPCB_Backup_Job
 {
@@ -87,7 +86,7 @@ class WPCB_Backup_Job
      */
     private function stepScanFiles()
     {
-        @set_time_limit(60);
+        wpcb_extend_time_limit(60);
 
         $startTime = microtime(true);
 
@@ -270,33 +269,58 @@ class WPCB_Backup_Job
 
 
     /**
-     * Database export
+     * Database export, one time-boxed chunk per call - see WPCB_Database::export().
      */
     private function stepExportDatabase()
     {
+        wpcb_extend_time_limit(60);
+
         $workspace = $this->workspace();
 
 
         $database = new WPCB_Database();
 
 
-        $sqlFile = $database->export(
-            $workspace->file('database.sql')
+        $result = $database->export(
+            $workspace->file('database.sql'),
+            $workspace->getJson('database.state.json')
         );
 
 
 
-        if (!$sqlFile) {
+        if (!$result) {
 
             return $this->fail(
                 sprintf(
                     /* translators: %s: path to the log file, relative to the WordPress root */
-                    __('Database export failed - the dump could not be written in full, which usually means the disk is full or the plugin\'s temp folder is not writable. No partial dump was kept. See %s for the table it stopped on.', 'rebuzz-backup-and-restore'),
+                    __('Database export failed. No partial dump was kept. See %s for the table it stopped on and why - usually a full disk or a temp folder that is not writable.', 'rebuzz-backup-and-restore'),
                     wpcb_display_path(wpcb_logs_dir() . '/backup.log')
                 )
             );
 
         }
+
+
+        if (!$result['finished']) {
+
+            // Unsaved, the next call would start the dump over - and do so forever.
+            if ($workspace->put('database.state.json', $result['state']) === false) {
+                return $this->fail(__('Database export failed - its progress could not be saved to the temp folder. The disk may be full.', 'rebuzz-backup-and-restore'));
+            }
+
+            $this->job->update([
+                'status' => 'running',
+                'step' => 1,
+                'progress' => 10 + (int) (20 * $result['done'] / max(1, $result['total'])),
+                /* translators: 1: tables exported so far, 2: total number of tables and views */
+                'message' => sprintf(__('Exporting database (%1$d of %2$d tables)...', 'rebuzz-backup-and-restore'), $result['done'], $result['total'])
+            ]);
+
+            return true;
+        }
+
+
+        $workspace->delete('database.state.json');
 
 
 

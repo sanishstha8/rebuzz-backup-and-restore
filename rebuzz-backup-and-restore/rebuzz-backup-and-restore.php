@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.4.3
+ * Version: 1.5.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -89,9 +89,65 @@ if (!defined('ABSPATH')) {
     if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step'], true)) {
         add_filter('pre_get_ready_cron_jobs', '__return_empty_array');
     }
+
+    /*
+     * On a fatal, WordPress's own handler runs first and prints its
+     * "critical error" page with a 500, ahead of any JSON - the browser
+     * then only ever says "AJAX request failed". Silence it for these
+     * requests so the real cause reaches the dashboard. (The
+     * wp_should_handle_php_error filter can't do this: core only asks
+     * it about non-fatal error types.)
+     */
+    add_filter('wp_php_error_message', '__return_empty_string', PHP_INT_MAX);
+    add_filter('wp_php_error_args', function ($args) {
+
+        $args['response'] = 200;
+        $args['exit'] = false;
+
+        return $args;
+    }, PHP_INT_MAX);
+
+    /*
+     * Fallback for a fatal hit before a step's own crash handler exists
+     * (during bootstrap, or in a start_* handler): answer with the real
+     * error as JSON. WPCB_Admin::guardAgainstFatalError() defines
+     * WPCB_STEP_GUARD_ACTIVE when it takes over.
+     */
+    register_shutdown_function(function () {
+
+        if (defined('WPCB_STEP_GUARD_ACTIVE')) {
+            return;
+        }
+
+        $error = error_get_last();
+
+        if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+            return;
+        }
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        if (!headers_sent()) {
+            http_response_code(200);
+            header('Content-Type: application/json; charset=utf-8');
+        }
+
+        echo json_encode([
+            'success' => false,
+            'data' => sprintf(
+                /* translators: 1: PHP error message, 2: line number, 3: file name */
+                __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s). Check your host\'s PHP error log for the full trace.', 'rebuzz-backup-and-restore'),
+                $error['message'],
+                $error['line'],
+                basename($error['file'])
+            )
+        ]);
+    });
 })();
 
-define('WPCB_VERSION', '1.4.3');
+define('WPCB_VERSION', '1.5.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 

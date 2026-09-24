@@ -12,7 +12,10 @@ if (!defined('ABSPATH')) {
  * the central directory is built separately in a ".cdir" file and
  * merged in once, in finalize().
  *
- * Entries stored uncompressed (STORE) to skip compression CPU cost.
+ * Text-like entries (the SQL dump, PHP/JS/CSS...) are DEFLATEd as they
+ * stream through; already-compressed media stays STORE, since
+ * deflating it costs CPU for nothing. A shared-host restore needs room
+ * for the ZIP and its extracted copy at once, so this matters.
  * Zip64 fields always written (small fixed overhead) rather than
  * conditionally past 4GB/65535 entries, to avoid boundary bugs.
  * ZipArchive/libzip (used to read archives back) supports Zip64 fine.
@@ -30,6 +33,18 @@ class WPCB_Zip_Stream
 
     /** Zip64-required version marker (4.5, encoded as major*10+minor). */
     const VERSION_ZIP64 = 45;
+
+    const METHOD_STORE = 0;
+    const METHOD_DEFLATE = 8;
+
+    /** Extensions worth compressing - text that typically shrinks 70-90%. */
+    const DEFLATE_EXTENSIONS = [
+        'sql', 'php', 'js', 'css', 'html', 'htm', 'txt', 'json', 'xml',
+        'svg', 'md', 'po', 'pot', 'csv', 'map', 'ini', 'log'
+    ];
+
+    /** Above this, compress at level 1 so one big dump fits a step's time budget. */
+    const FAST_DEFLATE_ABOVE_BYTES = 67108864;
 
     /** @var string */
     private $zipFile;
@@ -74,6 +89,9 @@ class WPCB_Zip_Stream
 
         $name = str_replace('\\', '/', $entryName);
 
+        $deflate = $this->deflateContext($name, $sourcePath);
+        $method = $deflate !== null ? self::METHOD_DEFLATE : self::METHOD_STORE;
+
         // Bit 3 set: crc/size deferred to a data descriptor after the
         // read/write loop, enabling one streaming pass instead of
         // reading each file twice. Central-dir readers (incl.
@@ -85,7 +103,7 @@ class WPCB_Zip_Stream
             self::SIG_LOCAL,
             self::VERSION_ZIP64,
             0x0008,         // general purpose flag: data descriptor follows
-            0,              // compression method (0 = store)
+            $method,        // compression method
             $dosTime,
             $dosDate,
             0,              // crc-32 - deferred to data descriptor
@@ -118,10 +136,13 @@ class WPCB_Zip_Stream
 
         $written = strlen($localHeader) + strlen($name) + strlen($localExtra);
 
-        // Single pass: hash (crc32 + sha256) and write the same read bytes.
+        // Single pass: hash (crc32 + sha256) the read bytes, write them
+        // (compressed or not). Hashes are of the original bytes, so
+        // checksums don't depend on the compression method.
         $crcCtx = hash_init('crc32b');
         $shaCtx = hash_init('sha256');
         $size = 0;
+        $compressedSize = 0;
         $writeFailed = false;
 
         while (!feof($in)) {
@@ -131,12 +152,28 @@ class WPCB_Zip_Stream
             }
             hash_update($crcCtx, $chunk);
             hash_update($shaCtx, $chunk);
-            if (!$this->writeAll($out, $chunk)) {
+            $size += strlen($chunk);
+
+            $data = $deflate !== null ? deflate_add($deflate, $chunk, ZLIB_NO_FLUSH) : $chunk;
+
+            if ($data === false || !$this->writeAll($out, $data)) {
                 $writeFailed = true;
                 break;
             }
-            $size += strlen($chunk);
-            $written += strlen($chunk);
+            $compressedSize += strlen($data);
+            $written += strlen($data);
+        }
+
+        if (!$writeFailed && $deflate !== null) {
+
+            $data = deflate_add($deflate, '', ZLIB_FINISH);
+
+            if ($data === false || !$this->writeAll($out, $data)) {
+                $writeFailed = true;
+            } else {
+                $compressedSize += strlen($data);
+                $written += strlen($data);
+            }
         }
 
         fclose($in);
@@ -154,7 +191,7 @@ class WPCB_Zip_Stream
             'VVPP',
             self::SIG_DATA_DESCRIPTOR,
             $crc,
-            $size,          // compressed size (= size, since STORE)
+            $compressedSize,
             $size           // uncompressed size
         );
 
@@ -177,7 +214,7 @@ class WPCB_Zip_Stream
             self::VERSION_ZIP64,  // version made by
             self::VERSION_ZIP64,  // version needed to extract
             0x0008,                // general purpose flag (match local header)
-            0,                     // compression method
+            $method,               // compression method
             $dosTime,
             $dosDate,
             $crc,
@@ -197,7 +234,7 @@ class WPCB_Zip_Stream
             0x0001,         // Zip64 extended information extra field tag
             24,             // size of the three fields below
             $size,          // uncompressed size
-            $size,          // compressed size
+            $compressedSize,
             $offset         // relative offset of local header
         );
 
@@ -224,6 +261,31 @@ class WPCB_Zip_Stream
             'cdir_written' => strlen($cdirRecord),
             'sha256'       => $sha256
         ];
+    }
+
+    /**
+     * Raw-deflate context for a text-like entry, or null to STORE it
+     * (media, or no zlib on this server).
+     *
+     * @return \DeflateContext|resource|null
+     */
+    private function deflateContext($name, $sourcePath)
+    {
+        if (!function_exists('deflate_init')) {
+            return null;
+        }
+
+        if (!in_array(strtolower(pathinfo($name, PATHINFO_EXTENSION)), self::DEFLATE_EXTENSIONS, true)) {
+            return null;
+        }
+
+        $size = @filesize($sourcePath);
+
+        $context = @deflate_init(ZLIB_ENCODING_RAW, [
+            'level' => ($size !== false && $size > self::FAST_DEFLATE_ABOVE_BYTES) ? 1 : 6
+        ]);
+
+        return $context === false ? null : $context;
     }
 
     /**

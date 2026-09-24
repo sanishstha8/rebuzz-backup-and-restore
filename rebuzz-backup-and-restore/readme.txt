@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.3
+Stable tag: 1.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,26 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 
 == Changelog ==
 
+= 1.5.0 =
+* Fixed: a failed restore no longer leaves a half-replaced database. The backup is now imported into temporary staging tables while your live site stays untouched, and only swapped in - all tables at once - after every file is in place. If the import fails, the site is exactly as it was.
+* Fixed: the database is now imported before any file is overwritten, so a database error can no longer leave new files running on the old database.
+* Fixed: database views were backed up as tables, rows included, which duplicated data or failed the restore. Views are now saved as definitions only and recreated after the tables. Older backups containing views restore correctly too.
+* Fixed: DEFINER clauses on views, triggers and routines are removed on backup and on restore, so a backup no longer fails on a server where the original database user doesn't exist.
+* Fixed: backups from MySQL 8 now restore onto older MySQL and MariaDB servers - the utf8mb4_0900_* collations and the utf8mb3 name are translated to ones the server knows.
+* Fixed: a PHP crash during a restore now reactivates your plugins, instead of leaving all of them switched off.
+* Fixed: restored PHP files are cleared from OPcache, preventing fatal errors from stale cached code right after a restore.
+* Fixed: the database export no longer runs in a single request, where a large database could hit the server's time limit and fail the backup. It now runs in short chunks like the other steps, and resumes by primary key, so rows added or deleted while the backup runs are never written twice.
+* Fixed: restoring a large database was very slow - every row was saved as its own transaction, waiting for its own disk flush, so a table with a million rows could take hours. Each chunk is now saved in one transaction, about 20 times faster in testing.
+* Fixed: on hosts that disable set_time_limit(), every backup and restore step crashed on PHP 8 with "Call to undefined function". The plugin now checks for it first; its chunked steps already stay inside the default time limit.
+* Fixed: an error reading a table's rows during the export now fails the backup with the table named in the log, instead of silently leaving the rest of that table out.
+* Fixed: the database export and URL rewrite size their batches by bytes, not a fixed row count, so tables with large rows no longer exhaust PHP's memory limit.
+* Fixed: a PHP fatal error now shows its real cause on the dashboard (for example the memory limit) instead of "AJAX request failed", and a failed job is no longer retried into the same crash.
+* Fixed: uploading a backup larger than the server's post_max_size now shows the "file too large" message instead of a blank page.
+* Fixed: a crashed backup no longer blocks new backups for an hour; a backup with no progress for 10 minutes is treated as stopped.
+* Changed: text files and the database dump are now compressed in the backup archive, making archives much smaller - which matters on shared hosting, where a restore needs room for both the archive and its extracted copy.
+* Fixed: protocol-relative URLs (//old-site/...) stay protocol-relative when the domain is rewritten.
+* Changed: the notice about leftover plugins-old/themes-old/uploads-old folders now warns that they may be publicly reachable.
+
 = 1.4.3 =
 * Fixed: a restore on shared hosting could run for thousands of files and then fail part-way through because the account was out of storage or had reached its file-count (inode) limit. Before a restore starts, the plugin now actually writes a few megabytes and creates a small number of test files in its own folder, and refuses to start if that fails - naming which limit was reached instead of stopping at an arbitrary file. The old check only asked the server how much space was free, which on shared hosting reports the whole disk rather than what your account is allowed to use, and cannot see inode limits at all.
 * Fixed: the free-space check measured the wrong folder when `WPCB_BACKUP_DIR` was set, reporting space for a filesystem the restore never writes to.
@@ -104,6 +124,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.5.0 =
+Restores are now all-or-nothing for the database: a failed import leaves your site untouched. Also fixes restores involving database views, MySQL 8 collations and DEFINER clauses, and a crash that left all plugins deactivated. Recommended for everyone.
 
 = 1.4.3 =
 A restore that would run out of storage or hit the account's file-count limit part-way through is now stopped before it starts, with a message naming which limit was reached. Recommended for anyone on shared hosting whose restore has failed mid-way.

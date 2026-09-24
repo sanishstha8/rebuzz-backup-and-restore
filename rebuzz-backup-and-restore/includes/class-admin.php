@@ -251,8 +251,7 @@ class WPCB_Admin
      * killed mid-transfer and the user is left with a truncated ZIP that
      * looks like a complete download.
      */
-    // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- per-request, on a request that only streams a file and exits; see above.
-    @set_time_limit(0);
+    wpcb_extend_time_limit(0);
 
     /*
      * A ZIP is already compressed, so gzipping it again costs CPU for
@@ -502,7 +501,11 @@ public function backup_step()
         wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
     }
 
-    // See restore_step()'s identical guard / isProcessing() docblock.
+    // See restore_step()'s identical guards.
+    if (($job->get()['status'] ?? '') === 'failed') {
+        wp_send_json_success($job->getPublic());
+    }
+
     if ($job->isProcessing()) {
         wp_send_json_success($job->getPublic());
     }
@@ -861,6 +864,17 @@ public function start_restore()
         ));
     }
 
+    // Same reasoning for the database: staging/parked tables of a restore that died.
+    $leftoverTables = (new WPCB_Database())->dropWorkTables();
+
+    if ($leftoverTables > 0) {
+
+        (new WPCB_Logger('restore'))->log(sprintf(
+            'Dropped %d leftover staging table(s) from an earlier interrupted restore.',
+            $leftoverTables
+        ));
+    }
+
     $space = wpcb_check_restore_disk_space($zip);
 
     if (!$space['ok']) {
@@ -986,6 +1000,12 @@ public function restore_step()
         wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
     }
 
+    // Already failed (e.g. marked so by the crash handler): report that
+    // instead of re-running the step that crashed and crashing again.
+    if (($job->get()['status'] ?? '') === 'failed') {
+        wp_send_json_success($job->getPublic());
+    }
+
     // Prevents a retry from double-processing the same step
     // concurrently; see WPCB_Job::isProcessing().
     if ($job->isProcessing()) {
@@ -1072,6 +1092,11 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
      */
     $baseBufferLevel = ob_get_level();
 
+    // Tells the early fallback in rebuzz-backup-and-restore.php that this handler will answer.
+    if (!defined('WPCB_STEP_GUARD_ACTIVE')) {
+        define('WPCB_STEP_GUARD_ACTIVE', true);
+    }
+
     register_shutdown_function(function () use ($job, $kind, $baseBufferLevel) {
 
         $error = error_get_last();
@@ -1081,6 +1106,11 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
         if (!$error || !in_array($error['type'], $fatalTypes, true)) {
             return;
         }
+
+        // A fatal inside wpdb (e.g. out of memory fetching a huge row)
+        // leaves its result half-read, and every query below would fail
+        // with "Commands out of sync" - the job would stay "running".
+        wpcb_recover_db_connection();
 
         // Crash skipped the normal clearProcessing(); do it here or
         // retries get rejected as "already running" for up to 90s.
@@ -1108,24 +1138,45 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
             'message' => $message
         ]);
 
-        // Crash bypasses fail(); release the lock here or a mid-restore
-        // crash blocks all future restores until restore.lock is deleted by hand.
-        if ($kind === 'restore' && function_exists('wpcb_restore_lock_release')) {
+        /*
+         * A crash bypasses fail(), so do its cleanup here: plugins back
+         * on, mu-plugins renamed back, moved-aside folders returned,
+         * staging tables dropped and the lock released. Otherwise a
+         * mid-restore crash leaves every plugin deactivated and blocks
+         * all future restores.
+         */
+        if ($kind === 'restore') {
 
-            wpcb_restore_lock_release();
+            try {
 
-            /*
-             * Same reasoning, but this one matters more: the crash may
-             * have happened after temporarilyDisableAllMuPlugins()
-             * renamed mu-plugins out of the way, and those commonly
-             * carry security-critical functionality. Put them back now
-             * rather than leaving the site running without them until
-             * something else happens to trigger the recovery pass. The
-             * lock is released first so this doesn't see the job it is
-             * cleaning up after as an active restore.
-             */
+                (new WPCB_Restore_Job($job))->cleanupAfterFailure();
+
+            } catch (\Throwable $e) {
+
+                if (function_exists('wpcb_restore_lock_release')) {
+                    wpcb_restore_lock_release();
+                }
+            }
+
+            // Belt-and-braces for the mu-plugins: they commonly carry
+            // security-critical code. Runs after the lock is released so
+            // it doesn't see this job as an active restore.
             if (function_exists('wpcb_recover_disabled_mu_plugins')) {
                 wpcb_recover_disabled_mu_plugins();
+            }
+        }
+
+        // Same for a backup: fail() would free the lock and the temp files.
+        if ($kind === 'backup') {
+
+            $state = $job->get();
+
+            if (!empty($state['workspace'])) {
+                (new WPCB_Workspace($state['workspace']))->cleanup();
+            }
+
+            if (function_exists('wpcb_backup_lock_release')) {
+                wpcb_backup_lock_release();
             }
         }
 
@@ -1195,10 +1246,10 @@ public function old_directories_notice()
     }
 
     ?>
-    <div class="notice notice-warning">
+    <div class="notice notice-error">
 
         <p>
-            <strong><?php esc_html_e('Rebuzz Backup: old directories from your restore', 'rebuzz-backup-and-restore'); ?></strong>
+            <strong><?php esc_html_e('Rebuzz Backup: delete the old directories from your restore', 'rebuzz-backup-and-restore'); ?></strong>
         </p>
 
         <p>
@@ -1212,7 +1263,11 @@ public function old_directories_notice()
         </p>
 
         <p>
-            <?php esc_html_e('Once the site looks right, delete them to reclaim the space. If something is missing, they are your way back - copy what you need out of them before deleting.', 'rebuzz-backup-and-restore'); ?>
+            <strong><?php esc_html_e('These folders sit inside your website and may be reachable from the internet - including old plugin and theme code, which can still be run and may contain known security holes, and any private uploads.', 'rebuzz-backup-and-restore'); ?></strong>
+        </p>
+
+        <p>
+            <?php esc_html_e('Check the restored site now, copy out anything that is missing, then delete them. Don\'t leave them in place.', 'rebuzz-backup-and-restore'); ?>
         </p>
 
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">

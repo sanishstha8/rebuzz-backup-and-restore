@@ -23,10 +23,13 @@ if (!defined('ABSPATH')) {
 class WPCB_Url_Rewriter
 {
     /**
-     * Rows per table per call. Kept modest - a row can hold a large
-     * serialized blob.
+     * Most rows fetched at once; the real limit is BATCH_TARGET_BYTES,
+     * since a row can hold a large serialized blob.
      */
     const ROWS_PER_BATCH = 200;
+
+    /** Approx bytes of text fetched per batch - see ROWS_PER_BATCH. */
+    const BATCH_TARGET_BYTES = 8388608;
 
     /**
      * Max seconds per run() call before returning control to browser.
@@ -75,6 +78,7 @@ class WPCB_Url_Rewriter
         $lastKey = isset($state['last_key']) && is_array($state['last_key']) ? $state['last_key'] : null;
         $rowsChanged = isset($state['rows_changed']) ? (int) $state['rows_changed'] : 0;
         $tableErrorCount = isset($state['table_error_count']) ? (int) $state['table_error_count'] : 0;
+        $batchRows = isset($state['batch_rows']) ? (int) $state['batch_rows'] : 0;
 
         $startTime = microtime(true);
 
@@ -101,6 +105,7 @@ class WPCB_Url_Rewriter
                 $tableIndex++;
                 $lastKey = null;
                 $tableErrorCount = 0;
+                $batchRows = 0;
                 continue;
             }
 
@@ -108,7 +113,13 @@ class WPCB_Url_Rewriter
             $columnList = implode(',', array_map([$this, 'quoteIdentifier'], $selectColumns));
             $orderBy = implode(',', array_map([$this, 'quoteIdentifier'], $keyColumns));
 
-            $rows = $this->fetchNextRows($wpdb, $table, $columnList, $keyColumns, $orderBy, $lastKey);
+            if ($batchRows <= 0) {
+                $batchRows = wpcb_initial_batch_rows($table, self::BATCH_TARGET_BYTES, self::ROWS_PER_BATCH);
+            }
+
+            $requested = $batchRows;
+
+            $rows = $this->fetchNextRows($wpdb, $table, $columnList, $keyColumns, $orderBy, $lastKey, $requested);
 
             if ($rows === false) {
 
@@ -130,6 +141,7 @@ class WPCB_Url_Rewriter
                     $tableIndex++;
                     $lastKey = null;
                     $tableErrorCount = 0;
+                    $batchRows = 0;
                     continue;
                 }
 
@@ -151,8 +163,11 @@ class WPCB_Url_Rewriter
             if (empty($rows)) {
                 $tableIndex++;
                 $lastKey = null;
+                $batchRows = 0;
                 continue;
             }
+
+            $batchBytes = 0;
 
             foreach ($rows as $row) {
 
@@ -161,6 +176,8 @@ class WPCB_Url_Rewriter
                 foreach ($textColumns as $column) {
 
                     $original = $row[$column];
+
+                    $batchBytes += strlen((string) $original);
 
                     if ($original === null || $original === '') {
                         continue;
@@ -205,9 +222,16 @@ class WPCB_Url_Rewriter
                 return $lastRow[$column];
             }, $keyColumns);
 
-            if (count($rows) < self::ROWS_PER_BATCH) {
+            $fetched = count($rows);
+
+            unset($rows, $lastRow);
+
+            $batchRows = wpcb_adapt_batch_rows($requested, $batchBytes, self::BATCH_TARGET_BYTES, self::ROWS_PER_BATCH);
+
+            if ($fetched < $requested) {
                 $tableIndex++;
                 $lastKey = null;
+                $batchRows = 0;
             }
         }
 
@@ -218,7 +242,8 @@ class WPCB_Url_Rewriter
                 'table_index' => $tableIndex,
                 'last_key' => $lastKey,
                 'rows_changed' => $rowsChanged,
-                'table_error_count' => $tableErrorCount
+                'table_error_count' => $tableErrorCount,
+                'batch_rows' => $batchRows
             ],
             'rows_changed' => $rowsChanged
         ];
@@ -232,7 +257,14 @@ class WPCB_Url_Rewriter
      */
     private function initialTableList($wpdb)
     {
-        $tables = array_values($wpdb->get_col('SHOW TABLES'));
+        // Base tables only: views hold no rows of their own, and restore
+        // work tables are about to be dropped.
+        $tables = array_values(array_filter(
+            (array) $wpdb->get_col("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'"),
+            function ($table) {
+                return !WPCB_Database::isWorkTable($table);
+            }
+        ));
 
         if (!is_multisite()) {
             return $tables;
@@ -257,14 +289,14 @@ class WPCB_Url_Rewriter
      * WPCB_Database::exportTable()). OFFSET would silently skip a row
      * when that happens; keyset ("key > last seen") doesn't.
      */
-    private function fetchNextRows($wpdb, $table, $columnList, array $keyColumns, $orderBy, $afterKey)
+    private function fetchNextRows($wpdb, $table, $columnList, array $keyColumns, $orderBy, $afterKey, $limit)
     {
         if ($afterKey === null) {
 
             $rows = $wpdb->get_results(
                 $wpdb->prepare(
                     "SELECT {$columnList} FROM `{$table}` ORDER BY {$orderBy} LIMIT %d",
-                    self::ROWS_PER_BATCH
+                    $limit
                 ),
                 ARRAY_A
             );
@@ -275,7 +307,7 @@ class WPCB_Url_Rewriter
             $placeholders = implode(',', array_fill(0, count($keyColumns), '%s'));
 
             $args = array_values($afterKey);
-            $args[] = self::ROWS_PER_BATCH;
+            $args[] = $limit;
 
             $rows = $wpdb->get_results(
                 $wpdb->prepare(
