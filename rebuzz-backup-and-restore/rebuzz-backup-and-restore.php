@@ -127,6 +127,11 @@ if (!defined('ABSPATH')) {
             return;
         }
 
+        // Before 'init', translating this plugin's text raises a "loaded too early" notice on WP 6.7+.
+        add_filter('doing_it_wrong_trigger_error', function ($trigger, $function, $notice) {
+            return ($function === '_load_textdomain_just_in_time' && strpos($notice, 'rebuzz-backup-and-restore') !== false) ? false : $trigger;
+        }, 10, 3);
+
         $message = sprintf(
             /* translators: 1: PHP error message, 2: line number, 3: file name */
             __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s).', 'rebuzz-backup-and-restore'),

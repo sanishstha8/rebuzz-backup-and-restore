@@ -29,6 +29,7 @@ class WPCB_Core_Swap
     const DIRECTORIES = ['wp-admin', 'wp-includes'];
 
     private $workspace;
+    private $journal = [];
 
     public function __construct(WPCB_Restore_Workspace $workspace)
     {
@@ -134,47 +135,125 @@ class WPCB_Core_Swap
             }
         }
 
-        $journal = ['committed' => false, 'renames' => []];
+        $this->journal = ['committed' => false, 'ops' => []];
 
-        if (!$this->workspace->put(self::JOURNAL, $journal)) {
+        if (!$this->workspace->put(self::JOURNAL, $this->journal)) {
             return ['ok' => false, 'error' => 'could not write to the restore workspace', 'swapped' => 0];
         }
 
-        $root = self::root();
-
         foreach ($names as $name) {
 
-            $live = $root . '/' . $name;
+            $error = $this->moveIn($name);
 
-            $moves = file_exists($live)
-                ? [[$live, $old . '/' . $name], [$stage . '/' . $name, $live]]
-                : [[$stage . '/' . $name, $live]];
+            if ($error !== null) {
 
-            foreach ($moves as $move) {
+                $this->rollback();
 
-                // Journaled before the rename, so a crash mid-rename is still undone.
-                $journal['renames'][] = $move;
-                $this->workspace->put(self::JOURNAL, $journal);
-
-                if (!@rename($move[0], $move[1])) {
-
-                    array_pop($journal['renames']);
-                    $this->workspace->put(self::JOURNAL, $journal);
-
-                    $this->rollback();
-
-                    return [
-                        'ok' => false,
-                        'error' => sprintf('could not rename %s to %s', $this->display($move[0]), $this->display($move[1])),
-                        'swapped' => 0
-                    ];
-                }
+                return ['ok' => false, 'error' => $error, 'swapped' => 0];
             }
         }
 
         self::clearOpcache();
 
         return ['ok' => true, 'error' => '', 'swapped' => count($names)];
+    }
+
+    /**
+     * Move live $relative into OLD_DIR and the staged one into its place.
+     *
+     * A directory that won't rename has its entries swapped one by one
+     * instead: on Windows the directory holding the running script -
+     * wp-admin, for admin-ajax.php - can't be renamed while the request
+     * runs. That script itself can't be renamed either, but can be
+     * overwritten, so it is copied aside and then overwritten.
+     *
+     * @return string|null Error, or null on success.
+     */
+    private function moveIn($relative)
+    {
+        $live = self::root() . '/' . $relative;
+        $stage = self::stagePath() . '/' . $relative;
+        $old = self::oldPath() . '/' . $relative;
+
+        if (file_exists($live)) {
+
+            if ($this->rename($live, $old)) {
+
+                // Moved out; the staged copy goes in below.
+
+            } elseif (is_dir($live) && !is_link($live)) {
+
+                if (!is_dir($old) && !wp_mkdir_p($old)) {
+                    return sprintf('could not create %s', $this->display($old));
+                }
+
+                $children = array_unique(array_merge(
+                    self::children($live),
+                    is_dir($stage) ? self::children($stage) : []
+                ));
+
+                foreach ($children as $child) {
+
+                    $error = $this->moveIn($relative . '/' . $child);
+
+                    if ($error !== null) {
+                        return $error;
+                    }
+                }
+
+                return null;
+
+            } elseif (is_file($live) && is_file($stage)) {
+
+                if (!@copy($live, $old)) {
+                    return sprintf('could not copy %s to %s', $this->display($live), $this->display($old));
+                }
+
+                $this->record(['overwrite', $live, $old]);
+
+                if (!@copy($stage, $live)) {
+                    return sprintf('could not overwrite %s', $this->display($live));
+                }
+
+                return null;
+
+            } else {
+
+                return sprintf('could not rename %s to %s', $this->display($live), $this->display($old));
+            }
+        }
+
+        if (file_exists($stage) && !$this->rename($stage, $live)) {
+            return sprintf('could not rename %s to %s', $this->display($stage), $this->display($live));
+        }
+
+        return null;
+    }
+
+    /** Journaled before the rename, so a crash mid-rename is still undone. */
+    private function rename($from, $to)
+    {
+        $this->record(['rename', $from, $to]);
+
+        if (@rename($from, $to)) {
+            return true;
+        }
+
+        array_pop($this->journal['ops']);
+        $this->workspace->put(self::JOURNAL, $this->journal);
+
+        return false;
+    }
+
+    private function record(array $op)
+    {
+        $this->journal['ops'][] = $op;
+        $this->workspace->put(self::JOURNAL, $this->journal);
+    }
+
+    private static function children($dir)
+    {
+        return array_values(array_diff(scandir($dir) ?: [], ['.', '..']));
     }
 
     /** The database matches the new core now; never roll it back after this. */
@@ -196,7 +275,7 @@ class WPCB_Core_Swap
     }
 
     /**
-     * Undo an uncommitted swap, newest rename first.
+     * Undo an uncommitted swap, newest step first.
      *
      * @return bool|null Null if there was nothing to undo.
      */
@@ -204,22 +283,32 @@ class WPCB_Core_Swap
     {
         $journal = $this->workspace->getJson(self::JOURNAL);
 
-        if (empty($journal['renames']) || !empty($journal['committed'])) {
+        if (empty($journal['ops']) || !empty($journal['committed'])) {
             return null;
         }
 
         $ok = true;
 
-        foreach (array_reverse($journal['renames']) as $move) {
+        foreach (array_reverse($journal['ops']) as $op) {
 
-            list($from, $to) = $move;
+            list($type, $a, $b) = $op;
 
-            // Journaled but never done (crash between journal write and rename).
-            if (!file_exists($to) && file_exists($from)) {
+            if ($type === 'overwrite') {
+
+                // $a was overwritten after its original was copied to $b.
+                if (!@copy($b, $a)) {
+                    $ok = false;
+                }
+
                 continue;
             }
 
-            if (!@rename($to, $from)) {
+            // Journaled but never done (crash between journal write and rename).
+            if (!file_exists($b) && file_exists($a)) {
+                continue;
+            }
+
+            if (!@rename($b, $a)) {
                 $ok = false;
             }
         }
