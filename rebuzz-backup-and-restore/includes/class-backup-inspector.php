@@ -35,6 +35,10 @@ class WPCB_Backup_Inspector
             ];
         }
 
+        // Same test as WPCB_Core_Swap::backupHasCore(), without extracting.
+        $hasCore = $zip->locateName('files/wp-includes/version.php') !== false &&
+            $zip->locateName('files/wp-admin/admin.php') !== false;
+
         $zip->close();
 
         $data = json_decode($manifest, true);
@@ -48,7 +52,8 @@ class WPCB_Backup_Inspector
 
         return [
             'success' => true,
-            'manifest' => $data
+            'manifest' => $data,
+            'has_core' => $hasCore
         ];
     }
 }

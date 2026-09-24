@@ -110,10 +110,12 @@ if (!defined('ABSPATH')) {
     /*
      * Fallback for a fatal hit before a step's own crash handler exists
      * (during bootstrap, or in a start_* handler): answer with the real
-     * error as JSON. WPCB_Admin::guardAgainstFatalError() defines
+     * error as JSON, and fail the job and free its lock the way the
+     * step guard would - otherwise the lock blocks every later restore.
+     * WPCB_Admin::guardAgainstFatalError() defines
      * WPCB_STEP_GUARD_ACTIVE when it takes over.
      */
-    register_shutdown_function(function () {
+    register_shutdown_function(function () use ($action) {
 
         if (defined('WPCB_STEP_GUARD_ACTIVE')) {
             return;
@@ -123,6 +125,32 @@ if (!defined('ABSPATH')) {
 
         if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
             return;
+        }
+
+        $message = sprintf(
+            /* translators: 1: PHP error message, 2: line number, 3: file name */
+            __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s).', 'rebuzz-backup-and-restore'),
+            $error['message'],
+            $error['line'],
+            basename($error['file'])
+        );
+
+        // The crash may be in this plugin's own files, before its classes loaded.
+        if (class_exists('WPCB_Admin') && function_exists('wpcb_fatal_error_hint')) {
+
+            $message .= ' ' . wpcb_fatal_error_hint($error['message']);
+
+            try {
+
+                $crashed = WPCB_Admin::crashedRequestJob($action);
+
+                if ($crashed !== null) {
+                    WPCB_Admin::recordCrash($crashed[0], $crashed[1], $message);
+                }
+
+            } catch (\Throwable $e) {
+                // Still answer with the original error below.
+            }
         }
 
         while (ob_get_level() > 0) {
@@ -136,13 +164,7 @@ if (!defined('ABSPATH')) {
 
         echo json_encode([
             'success' => false,
-            'data' => sprintf(
-                /* translators: 1: PHP error message, 2: line number, 3: file name */
-                __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s). Check your host\'s PHP error log for the full trace.', 'rebuzz-backup-and-restore'),
-                $error['message'],
-                $error['line'],
-                basename($error['file'])
-            )
+            'data' => $message
         ]);
     });
 })();

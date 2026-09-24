@@ -219,6 +219,50 @@ $zip = wpcb_backups_dir() . '/' . $file;
 
     </div>
 
+    <?php
+
+    $backupWpVersion = (string) ($manifest['wordpress']['version'] ?? '');
+    $siteWpVersion = get_bloginfo('version');
+
+    if ($backupWpVersion !== '' && $backupWpVersion !== $siteWpVersion) : ?>
+
+        <div class="notice notice-warning">
+            <p>
+                <strong><?php esc_html_e('Different WordPress version', 'rebuzz-backup-and-restore'); ?></strong>
+                <?php
+                if (!empty($result['has_core'])) {
+
+                    printf(
+                        /* translators: 1: WordPress version in the backup, 2: WordPress version this site runs */
+                        esc_html__('This backup was made on WordPress %1$s and this site runs %2$s. The restore puts WordPress %1$s back along with its database, so the site will run %1$s afterwards.', 'rebuzz-backup-and-restore'),
+                        esc_html($backupWpVersion),
+                        esc_html($siteWpVersion)
+                    );
+
+                } elseif (version_compare($backupWpVersion, $siteWpVersion, '>')) {
+
+                    printf(
+                        /* translators: 1: WordPress version in the backup, 2: WordPress version this site runs */
+                        esc_html__('This backup was made on WordPress %1$s but holds no WordPress core files, so this site keeps running %2$s against a database from a newer version. Update WordPress to %1$s before restoring.', 'rebuzz-backup-and-restore'),
+                        esc_html($backupWpVersion),
+                        esc_html($siteWpVersion)
+                    );
+
+                } else {
+
+                    printf(
+                        /* translators: 1: WordPress version in the backup, 2: WordPress version this site runs */
+                        esc_html__('This backup was made on WordPress %1$s but holds no WordPress core files, so this site keeps running %2$s. WordPress will ask to update the restored database the first time you open the dashboard afterwards.', 'rebuzz-backup-and-restore'),
+                        esc_html($backupWpVersion),
+                        esc_html($siteWpVersion)
+                    );
+                }
+                ?>
+            </p>
+        </div>
+
+    <?php endif; ?>
+
 
 
     <p>

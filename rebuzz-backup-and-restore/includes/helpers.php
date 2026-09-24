@@ -1748,8 +1748,8 @@ function wpcb_restore_lock_upload_dir()
 
 /**
  * Is a restore genuinely in progress - lock file exists AND its job
- * still reports "running" (a stale lock from a finished/expired job
- * shouldn't block future restores forever).
+ * still reports "running" with recent progress (a stale lock from a
+ * finished, expired or killed job shouldn't block future restores).
  *
  * @return string|null Other job's ID if active, else null.
  */
@@ -1768,13 +1768,32 @@ function wpcb_restore_lock_check()
     }
 
     $job = new WPCB_Job($jobId);
+
+    return wpcb_job_is_alive($job) ? $jobId : null;
+}
+
+/**
+ * True if $job is "running" and has shown progress within
+ * WPCB_STALE_JOB_SECONDS or has a step mid-flight. A job killed
+ * outright (host kill, OOM inside the shutdown handler) is never marked
+ * failed, and would otherwise hold its lock until its transient expired
+ * an hour later.
+ */
+function wpcb_job_is_alive(WPCB_Job $job)
+{
     $state = $job->get();
 
-    if (($state['status'] ?? '') === 'running') {
-        return $jobId;
+    if (($state['status'] ?? '') !== 'running') {
+        return false;
     }
 
-    return null;
+    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
+
+    return !(
+        $lastSeen > 0 &&
+        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
+        !$job->isProcessing()
+    );
 }
 
 /**
@@ -1854,6 +1873,9 @@ function wpcb_restore_lock_acquire($jobId)
     // and releasing it disarms the guard, with no second piece of state
     // that could drift out of step with this one.
 
+    // So a fatal later in this request can fail the job and free the lock; see WPCB_Admin::crashedRequestJob().
+    $GLOBALS['wpcb_lock_claimed']['restore'] = $jobId;
+
     return true;
 }
 
@@ -1863,6 +1885,8 @@ function wpcb_restore_lock_acquire($jobId)
  */
 function wpcb_restore_lock_release()
 {
+    unset($GLOBALS['wpcb_lock_claimed']['restore']);
+
     $path = wpcb_restore_lock_path();
 
     if (file_exists($path)) {
@@ -1902,34 +1926,13 @@ function wpcb_backup_lock_check()
     }
 
     $job = new WPCB_Job($jobId);
-    $state = $job->get();
 
-    if (($state['status'] ?? '') !== 'running') {
-        return null;
-    }
-
-    /*
-     * A backup killed outright (host kill, OOM inside the shutdown
-     * handler) never gets marked failed, and used to block new backups
-     * until its transient expired an hour later. No progress for this
-     * long, and no step mid-flight, means nothing is running any more.
-     */
-    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
-
-    if (
-        $lastSeen > 0 &&
-        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
-        !$job->isProcessing()
-    ) {
-        return null;
-    }
-
-    return $jobId;
+    return wpcb_job_is_alive($job) ? $jobId : null;
 }
 
 /**
- * Seconds without progress after which a "running" backup is treated
- * as dead - see wpcb_backup_lock_check().
+ * Seconds without progress after which a "running" backup or restore
+ * is treated as dead - see wpcb_job_is_alive().
  */
 if (!defined('WPCB_STALE_JOB_SECONDS')) {
     define('WPCB_STALE_JOB_SECONDS', 10 * MINUTE_IN_SECONDS);
@@ -1963,6 +1966,19 @@ function wpcb_recover_db_connection()
     }
 
     $wpdb->suppress_errors($suppressed);
+}
+
+/**
+ * Second sentence of a crash message: blames PHP's time or memory limit
+ * only when that is what the fatal error actually was.
+ */
+function wpcb_fatal_error_hint($errorMessage)
+{
+    if (preg_match('/Maximum execution time|Allowed memory size|Out of memory/i', (string) $errorMessage)) {
+        return __('A PHP execution time or memory limit was hit - consider raising max_execution_time or memory_limit. Your host\'s PHP error log has the full trace.', 'rebuzz-backup-and-restore');
+    }
+
+    return __('Your host\'s PHP error log has the full trace.', 'rebuzz-backup-and-restore');
 }
 
 /**
@@ -2053,6 +2069,8 @@ function wpcb_backup_lock_acquire($jobId)
         return false;
     }
 
+    $GLOBALS['wpcb_lock_claimed']['backup'] = $jobId;
+
     return true;
 }
 
@@ -2061,6 +2079,8 @@ function wpcb_backup_lock_acquire($jobId)
  */
 function wpcb_backup_lock_release()
 {
+    unset($GLOBALS['wpcb_lock_claimed']['backup']);
+
     $path = wpcb_backup_lock_path();
 
     if (file_exists($path)) {

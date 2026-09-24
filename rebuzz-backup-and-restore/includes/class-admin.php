@@ -875,6 +875,9 @@ public function start_restore()
         ));
     }
 
+    // And the staged/replaced core folders one may have left in the WordPress root.
+    WPCB_Core_Swap::removeLeftovers();
+
     $space = wpcb_check_restore_disk_space($zip);
 
     if (!$space['ok']) {
@@ -1107,78 +1110,16 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
             return;
         }
 
-        // A fatal inside wpdb (e.g. out of memory fetching a huge row)
-        // leaves its result half-read, and every query below would fail
-        // with "Commands out of sync" - the job would stay "running".
-        wpcb_recover_db_connection();
-
-        // Crash skipped the normal clearProcessing(); do it here or
-        // retries get rejected as "already running" for up to 90s.
-        $job->clearProcessing();
-
         $message = sprintf(
             /* translators: 1: "backup" or "restore", 2: PHP error message, 3: line number, 4: file name */
-            __('The %1$s step crashed (%2$s at line %3$d of %4$s). This usually means a PHP execution time or memory limit was hit while processing this step - check your host\'s PHP error log for the full trace, and consider raising max_execution_time or memory_limit.', 'rebuzz-backup-and-restore'),
+            __('The %1$s step crashed (%2$s at line %3$d of %4$s).', 'rebuzz-backup-and-restore'),
             $kind,
             $error['message'],
             $error['line'],
             basename($error['file'])
-        );
+        ) . ' ' . wpcb_fatal_error_hint($error['message']);
 
-        // Log the crash too, not just browser/job state, so the
-        // cause survives after the on-screen message is gone.
-        if (class_exists('WPCB_Logger')) {
-
-            $logger = new WPCB_Logger($kind);
-            $logger->log('CRASH: ' . $message);
-        }
-
-        $job->update([
-            'status' => 'failed',
-            'message' => $message
-        ]);
-
-        /*
-         * A crash bypasses fail(), so do its cleanup here: plugins back
-         * on, mu-plugins renamed back, moved-aside folders returned,
-         * staging tables dropped and the lock released. Otherwise a
-         * mid-restore crash leaves every plugin deactivated and blocks
-         * all future restores.
-         */
-        if ($kind === 'restore') {
-
-            try {
-
-                (new WPCB_Restore_Job($job))->cleanupAfterFailure();
-
-            } catch (\Throwable $e) {
-
-                if (function_exists('wpcb_restore_lock_release')) {
-                    wpcb_restore_lock_release();
-                }
-            }
-
-            // Belt-and-braces for the mu-plugins: they commonly carry
-            // security-critical code. Runs after the lock is released so
-            // it doesn't see this job as an active restore.
-            if (function_exists('wpcb_recover_disabled_mu_plugins')) {
-                wpcb_recover_disabled_mu_plugins();
-            }
-        }
-
-        // Same for a backup: fail() would free the lock and the temp files.
-        if ($kind === 'backup') {
-
-            $state = $job->get();
-
-            if (!empty($state['workspace'])) {
-                (new WPCB_Workspace($state['workspace']))->cleanup();
-            }
-
-            if (function_exists('wpcb_backup_lock_release')) {
-                wpcb_backup_lock_release();
-            }
-        }
+        self::recordCrash($job, $kind, $message);
 
         // Discard whatever partial output this request produced, so
         // only clean JSON goes out - but only down to the depth the
@@ -1198,6 +1139,128 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
             'data' => $message
         ]);
     });
+}
+
+/**
+ * Mark a crashed job failed and do what its fail() would have done.
+ * Shared by the step guard above and the bootstrap fallback in
+ * rebuzz-backup-and-restore.php.
+ *
+ * @param string $kind 'backup' or 'restore'.
+ */
+public static function recordCrash(WPCB_Job $job, $kind, $message)
+{
+    // A fatal inside wpdb (e.g. out of memory fetching a huge row)
+    // leaves its result half-read, and every query below would fail
+    // with "Commands out of sync" - the job would stay "running".
+    wpcb_recover_db_connection();
+
+    // Crash skipped the normal clearProcessing(); do it here or
+    // retries get rejected as "already running" for up to 90s.
+    $job->clearProcessing();
+
+    // Log the crash too, not just browser/job state, so the
+    // cause survives after the on-screen message is gone.
+    (new WPCB_Logger($kind))->log('CRASH: ' . $message);
+
+    $job->update([
+        'status' => 'failed',
+        'message' => $message
+    ]);
+
+    /*
+     * A crash bypasses fail(), so do its cleanup here: plugins back
+     * on, mu-plugins renamed back, moved-aside folders returned,
+     * staging tables dropped and the lock released. Otherwise a
+     * mid-restore crash leaves every plugin deactivated and blocks
+     * all future restores.
+     */
+    if ($kind === 'restore') {
+
+        try {
+
+            (new WPCB_Restore_Job($job))->cleanupAfterFailure();
+
+        } catch (\Throwable $e) {
+
+            wpcb_restore_lock_release();
+        }
+
+        // Belt-and-braces for the mu-plugins: they commonly carry
+        // security-critical code. Runs after the lock is released so
+        // it doesn't see this job as an active restore.
+        wpcb_recover_disabled_mu_plugins();
+    }
+
+    // Same for a backup: fail() would free the lock and the temp files.
+    if ($kind === 'backup') {
+
+        $state = $job->get();
+
+        if (!empty($state['workspace'])) {
+            (new WPCB_Workspace($state['workspace']))->cleanup();
+        }
+
+        wpcb_backup_lock_release();
+    }
+}
+
+/**
+ * The job a fatal-crashed request of $action was driving, if the
+ * request may act on it: one whose lock this request claimed, or one
+ * named by job_id that the logged-in, nonce-checked owner is polling.
+ * For the bootstrap fallback, which can run before WordPress has
+ * checked anything - hence loading pluggable.php itself.
+ *
+ * @return array{0: WPCB_Job, 1: string}|null Job and 'backup'/'restore'.
+ */
+public static function crashedRequestJob($action)
+{
+    $kinds = [
+        'wpcb_start_backup'  => 'backup',
+        'wpcb_backup_step'   => 'backup',
+        'wpcb_start_restore' => 'restore',
+        'wpcb_restore_step'  => 'restore',
+    ];
+
+    if (!isset($kinds[$action])) {
+        return null;
+    }
+
+    $kind = $kinds[$action];
+
+    // Claimed by this request after the start handler's own nonce and capability checks.
+    $claimed = $GLOBALS['wpcb_lock_claimed'][$kind] ?? '';
+
+    if ($claimed !== '') {
+        return [new WPCB_Job($claimed), $kind];
+    }
+
+    // phpcs:disable WordPress.Security.NonceVerification.Missing -- verified below.
+    $jobId = isset($_POST['job_id']) && is_scalar($_POST['job_id']) ? sanitize_text_field(wp_unslash($_POST['job_id'])) : '';
+    $nonce = isset($_POST['nonce']) && is_scalar($_POST['nonce']) ? sanitize_text_field(wp_unslash($_POST['nonce'])) : '';
+    // phpcs:enable WordPress.Security.NonceVerification.Missing
+
+    if ($jobId === '' || $nonce === '') {
+        return null;
+    }
+
+    // Plugins load before pluggable.php, and a half-restored plugin is the usual crash.
+    if (!function_exists('wp_verify_nonce') || !function_exists('wp_get_current_user')) {
+        require_once ABSPATH . WPINC . '/pluggable.php';
+    }
+
+    if (!current_user_can('manage_options') || !wp_verify_nonce($nonce, 'wpcb_backup')) {
+        return null;
+    }
+
+    $job = new WPCB_Job($jobId);
+
+    if (!$job->isOwnedBy(get_current_user_id()) || ($job->get()['status'] ?? '') !== 'running') {
+        return null;
+    }
+
+    return [$job, $kind];
 }
 
 /**

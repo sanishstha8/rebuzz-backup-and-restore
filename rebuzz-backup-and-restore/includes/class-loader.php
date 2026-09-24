@@ -23,6 +23,7 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-extractor.php';
         require_once WPCB_PATH . 'includes/class-restore-workspace.php';
         require_once WPCB_PATH . 'includes/class-restore-job.php';
+        require_once WPCB_PATH . 'includes/class-core-swap.php';
         require_once WPCB_PATH . 'includes/class-quarantine.php';
         require_once WPCB_PATH . 'includes/class-url-rewriter.php';
         require_once WPCB_PATH . 'includes/class-logger.php';
