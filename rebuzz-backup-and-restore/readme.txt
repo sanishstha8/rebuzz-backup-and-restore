@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.5.1
+Stable tag: 1.5.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,10 @@ Yes. A network administrator can back up the whole network, while an individual 
 Every file and the database dump is hashed with SHA-256 when the backup is made, and those hashes are re-checked before the restore writes anything. If one doesn't match, the restore stops rather than continuing with a corrupt archive.
 
 == Changelog ==
+
+= 1.5.2 =
+* Fixed: on hosts that disable PHP's disk_free_space(), uploading a backup or starting a restore crashed on PHP 8 with "Call to undefined function". The free-space check is now skipped there, as it already was when the host could not measure the space; the storage test that runs before every restore still catches a full account.
+* Fixed: on hosts that disable PHP's ini_set(), downloading a backup crashed on PHP 8 when the server had output compression turned on.
 
 = 1.5.1 =
 * Fixed: restoring a backup made on a different WordPress version could send wp-admin to the "Database Update Required" screen. WordPress core used to be copied file by file across many requests, so the site ran a mix of old and new core, and new core against the old database. Core is now swapped in by folder renames in one request, together with the database; if the database swap fails, the previous core is put back.
@@ -135,6 +139,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.5.2 =
+Fixes crashes when uploading, restoring or downloading a backup on hosts that disable some PHP functions. Recommended for anyone on shared hosting.
 
 = 1.5.1 =
 Restoring a backup from a different WordPress version no longer sends wp-admin to the database update screen, and a restore that cannot replace WordPress core now stops before changing anything. Also fixes restores on Windows servers and memory errors on tables with very large rows. Recommended for everyone.

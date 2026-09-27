@@ -257,9 +257,10 @@ class WPCB_Admin
      * A ZIP is already compressed, so gzipping it again costs CPU for
      * nothing - and it silently invalidates the Content-Length below,
      * which is what browsers use to show progress and to notice a short
-     * download. Only touched when a host has actually turned it on.
+     * download. Only touched when a host has actually turned it on, and
+     * only if ini_set() isn't disabled - PHP 8 would fatal despite "@".
      */
-    if (ini_get('zlib.output_compression')) {
+    if (ini_get('zlib.output_compression') && function_exists('ini_set')) {
         // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- per-request output setting on a request that exits immediately; see above.
         @ini_set('zlib.output_compression', 'Off');
     }

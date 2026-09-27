@@ -886,7 +886,8 @@ function wpcb_check_upload_disk_space($fileSize, $dir)
     // 15% margin, same reasoning as wpcb_check_restore_disk_space().
     $required = (int) ($fileSize * 1.15);
 
-    $freeRaw = @disk_free_space($dir);
+    // Disabled on some hosts, where PHP 8 would fatal despite "@"; false reads as unmeasured.
+    $freeRaw = function_exists('disk_free_space') ? @disk_free_space($dir) : false;
     $unknown = ($freeRaw === false);
     $free = $unknown ? 0 : (int) $freeRaw;
 
@@ -1315,8 +1316,8 @@ function wpcb_check_restore_disk_space($zipPath)
     // and can be different mounts. Measuring the wrong one reports free
     // space for a filesystem the restore never writes to.
     //
-    // false (not 0) means disk_free_space() couldn't measure - treat
-    // as passing. An actual 0 means disk is really full - should fail.
+    // false (not 0) means disk_free_space() couldn't measure or is
+    // disabled - treat as passing. An actual 0 means disk is really full.
     $restoreDir = wpcb_data_dir();
 
     if (!is_dir($restoreDir)) {
@@ -1324,7 +1325,7 @@ function wpcb_check_restore_disk_space($zipPath)
         $restoreDir = !empty($upload['basedir']) ? $upload['basedir'] : ABSPATH;
     }
 
-    $freeRaw = @disk_free_space($restoreDir);
+    $freeRaw = function_exists('disk_free_space') ? @disk_free_space($restoreDir) : false;
     $unknown = ($freeRaw === false);
     $free = $unknown ? 0 : (int) $freeRaw;
 
