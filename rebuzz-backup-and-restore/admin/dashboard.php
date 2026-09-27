@@ -133,7 +133,7 @@ $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
                         esc_html(wpcb_display_path(wpcb_backups_dir()) . '/')
                     );
                 } else {
-                    esc_html_e('This site could not make a request to itself to check whether the backup folder is readable from the web, and the server is not one that reads the .htaccess rule this plugin writes. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable.', 'rebuzz-backup-and-restore');
+                    esc_html_e('This site could not make a request to itself to check whether the backup folder is readable from the web. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable. If that was a passing network problem, the check runs again within five minutes.', 'rebuzz-backup-and-restore');
                 }
                 ?>
             </p>

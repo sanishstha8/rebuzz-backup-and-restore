@@ -614,6 +614,11 @@ function wpcb_storage_exposure()
 
     $dir = wpcb_backups_dir();
 
+    // Recreate a deleted folder: backups and uploads are refused before either would.
+    if (!is_dir($dir)) {
+        wpcb_prepare_data_directories();
+    }
+
     if (!is_dir($dir)) {
         return 'unknown';
     }
@@ -656,7 +661,9 @@ function wpcb_storage_exposure()
 
 /**
  * wpcb_storage_exposure(), cached for a day so the HTTP round trip
- * happens on an occasional admin page load rather than constantly.
+ * happens on an occasional admin page load rather than constantly -
+ * but 'unknown' for five minutes only, since it refuses backups and may
+ * have been a passing network error.
  * A completed backup clears it, since that is when it matters most.
  */
 function wpcb_storage_exposure_cached()
@@ -669,7 +676,7 @@ function wpcb_storage_exposure_cached()
 
     $result = wpcb_storage_exposure();
 
-    set_transient('wpcb_storage_exposure', $result, DAY_IN_SECONDS);
+    set_transient('wpcb_storage_exposure', $result, $result === 'unknown' ? 5 * MINUTE_IN_SECONDS : DAY_IN_SECONDS);
 
     return $result;
 }
@@ -684,20 +691,18 @@ function wpcb_storage_exposure_cached()
  * out. The plugin refuses to create one when this returns false, rather
  * than producing a publicly downloadable archive and warning about it.
  *
- * Three ways it can be satisfied, strongest first:
+ * Two ways it can be satisfied:
  *
  *  1. WPCB_BACKUP_DIR points outside the served tree. There is then no
  *     URL that maps to the file at all.
  *  2. The canary check actually fetched a test file from the backups
  *     folder and the server refused - an .htaccess or web.config rule
  *     really is in force, or the host blocks the folder itself.
- *  3. The canary could not run (many hosts block loopback HTTP), so
- *     fall back to what the server says it is. Only Apache-family and
- *     IIS read the rule files this plugin writes; Nginx does not.
  *
- * Anything else - including "the check could not run and the server is
- * Nginx or unrecognised" - is treated as unsafe. Guessing in the other
- * direction is what leaves a database dump on the open web.
+ * Anything else, including a canary check that could not run, is
+ * treated as unsafe. SERVER_SOFTWARE can't stand in for the check:
+ * behind an Nginx front end it still says Apache, while Nginx serves
+ * the archive and never reads .htaccess.
  *
  * @return bool
  */
@@ -707,54 +712,7 @@ function wpcb_storage_is_private()
         return true;
     }
 
-    $exposure = wpcb_storage_exposure_cached();
-
-    if ($exposure === 'public') {
-        return false;
-    }
-
-    if ($exposure === 'private') {
-        return true;
-    }
-
-    // 'unknown' - the loopback request failed, which proves nothing.
-    return wpcb_server_honours_directory_rules();
-}
-
-/**
- * Whether this server reads the per-directory rule files
- * wpcb_protect_directory() writes.
- *
- * Only consulted when the canary check could not complete. Apache and
- * LiteSpeed read .htaccess; IIS reads web.config; Nginx reads neither,
- * and an unrecognised server is assumed not to.
- */
-function wpcb_server_honours_directory_rules()
-{
-    $software = isset($_SERVER['SERVER_SOFTWARE'])
-        ? strtolower(sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])))
-        : '';
-
-    if ($software === '') {
-        return false;
-    }
-
-    if (strpos($software, 'nginx') !== false) {
-        return false;
-    }
-
-    $readsHtaccess = (strpos($software, 'apache') !== false)
-        || (strpos($software, 'litespeed') !== false);
-
-    if ($readsHtaccess) {
-        return file_exists(wpcb_backups_dir() . '/.htaccess');
-    }
-
-    if (strpos($software, 'microsoft-iis') !== false) {
-        return file_exists(wpcb_backups_dir() . '/web.config');
-    }
-
-    return false;
+    return wpcb_storage_exposure_cached() === 'private';
 }
 
 /**
@@ -767,9 +725,14 @@ function wpcb_storage_insecure_reason()
         return '';
     }
 
-    return sprintf(
+    $reason = (wpcb_storage_exposure_cached() === 'public')
         /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
-        __('Backups are currently stored in %1$s, which this server will hand to anyone who requests the file - a backup contains your entire database. Add this line to wp-config.php, pointing at a folder outside your public web root, then try again: %2$s', 'rebuzz-backup-and-restore'),
+        ? __('Backups are currently stored in %1$s, which this server will hand to anyone who requests the file - a backup contains your entire database. Add this line to wp-config.php, pointing at a folder outside your public web root, then try again: %2$s', 'rebuzz-backup-and-restore')
+        /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
+        : __('This site could not make a request to itself to check whether %1$s can be downloaded from the web, so no backup is stored there - a backup contains your entire database. If that was a passing network problem, try again in five minutes. Otherwise add this line to wp-config.php, pointing at a folder outside your public web root: %2$s', 'rebuzz-backup-and-restore');
+
+    return sprintf(
+        $reason,
         wpcb_display_path(wpcb_backups_dir()) . '/',
         "define( 'WPCB_BACKUP_DIR', '/full/path/outside/public_html/rebuzz-backups' );"
     );

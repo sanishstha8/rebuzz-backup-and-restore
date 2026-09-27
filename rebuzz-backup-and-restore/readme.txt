@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.5.2
+Stable tag: 1.5.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -49,6 +49,8 @@ By default in `wp-content/uploads/rebuzz-backup-and-restore/backups/`. The plugi
 
 Because of that the plugin actively tests the folder before every backup: it requests a temporary file from it over HTTP with no login. If the server hands that file over, the backup is refused rather than created and left downloadable - a backup contains your whole database, so the plugin will not produce one it cannot keep private.
 
+Some hosts block a site from making requests to itself, so the test cannot run. Backups are refused then too: the server's name cannot settle it, because many hosts put Nginx, which ignores `.htaccess`, in front of Apache.
+
 To fix it, move backups out of the web root by adding this to `wp-config.php`:
 
 `define( 'WPCB_BACKUP_DIR', '/full/path/outside/public_html/rebuzz-backups' );`
@@ -69,8 +71,14 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 
 == Changelog ==
 
+= 1.5.3 =
+* Security: when the plugin cannot test whether the backups folder is private - some hosts block a site from making requests to itself - backups are now refused, as they already were on Nginx. It used to trust the server's name instead, but many hosts put Nginx in front of Apache: PHP reports Apache while Nginx serves the archive and ignores the .htaccess rule. Setting WPCB_BACKUP_DIR to a folder outside the web root fixes it, as before.
+* Changed: a privacy test that could not run is retried after five minutes instead of a day, so a passing network error does not turn backups off for long.
+* Fixed: a finished backup is discarded only when the backups folder is proven public, not when the test repeated after the backup cannot run.
+* Fixed: a deleted backups folder is recreated, instead of blocking new backups and uploads until the plugin was reactivated.
+
 = 1.5.2 =
-* Fixed: on hosts that disable PHP's disk_free_space(), uploading a backup or starting a restore crashed on PHP 8 with "Call to undefined function". The free-space check is now skipped there, as it already was when the host could not measure the space; the storage test that runs before every restore still catches a full account.
+* Fixed: on hosts that disable PHP's disk_free_space(), uploading a backup or starting a restore crashed on PHP 8 with "Call to undefined function", and on PHP 7.4 was refused for having "0 B" free. The free-space check is now skipped there, as it already was when the host could not measure the space; the storage test that runs before every restore still catches a full account.
 * Fixed: on hosts that disable PHP's ini_set(), downloading a backup crashed on PHP 8 when the server had output compression turned on.
 
 = 1.5.1 =
@@ -139,6 +147,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.5.3 =
+Backups are now refused when the plugin cannot test that the backup folder is private, instead of guessing from the server's name - on hosts that put Nginx in front of Apache, that guess could leave an archive downloadable. If backups stop, the Dashboard shows the one line to add to wp-config.php.
 
 = 1.5.2 =
 Fixes crashes when uploading, restoring or downloading a backup on hosts that disable some PHP functions. Recommended for anyone on shared hosting.

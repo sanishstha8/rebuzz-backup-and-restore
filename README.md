@@ -14,8 +14,9 @@ Complete WordPress Backup & Restore Solution.
 
 ## Branches
 
-- `main` — 1.4.0 baseline, imported unchanged from the release zip.
-- `restore-diagnostics` — 1.4.2: extractor failure reporting and restore-path fixes.
+- `main` — released versions, updated by merging pull requests from `restore-diagnostics`.
+- `restore-diagnostics` — development. The current version is the `Stable tag` in
+  `rebuzz-backup-and-restore/readme.txt`.
 
 ## Releases
 
