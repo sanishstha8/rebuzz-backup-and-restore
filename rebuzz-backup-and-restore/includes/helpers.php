@@ -101,8 +101,10 @@ function wpcb_menu_icon()
  * deepest ancestor that does exist is realpath()'d - which is what
  * resolves any symlink in the part of the path that is real - and the
  * remaining segments are then applied literally, with ".." collapsed.
+ * Parts open_basedir hides from PHP are applied literally the same way:
+ * a document root outside it is still served, so it must not drop out.
  *
- * @return string Normalised absolute path, or '' if it cannot be resolved.
+ * @return string Normalised absolute path, or '' if it is not absolute.
  */
 function wpcb_canonical_path($path)
 {
@@ -123,34 +125,32 @@ function wpcb_canonical_path($path)
         return '';
     }
 
-    $real = realpath($path);
-
-    if ($real !== false) {
-        return rtrim(str_replace('\\', '/', $real), '/');
-    }
-
-    // Walk up to the deepest part that exists, keeping what we trim.
+    // Walk up to the deepest part PHP can resolve, keeping what we trim.
     $trailing = [];
     $current  = $path;
 
-    while ($current !== '' && realpath($current) === false) {
+    while (true) {
+
+        $base = @realpath($current); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- outside open_basedir it only warns and returns false.
+
+        if ($base !== false) {
+            break;
+        }
 
         $parent = dirname($current);
 
-        // dirname() stops changing at a filesystem root; without this
-        // an unresolvable path would loop forever.
+        // dirname() stops changing at a filesystem root.
         if ($parent === $current) {
-            return '';
+            break;
         }
 
         array_unshift($trailing, basename($current));
         $current = $parent;
     }
 
-    $base = realpath($current);
-
+    // Nothing resolvable, not even the root: build on the root as written.
     if ($base === false) {
-        return '';
+        $base = $current;
     }
 
     $segments = explode('/', rtrim(str_replace('\\', '/', $base), '/'));
@@ -162,7 +162,10 @@ function wpcb_canonical_path($path)
         }
 
         if ($segment === '..') {
-            array_pop($segments);
+            // Never pop the root itself, or the result turns relative.
+            if (count($segments) > 1) {
+                array_pop($segments);
+            }
             continue;
         }
 
