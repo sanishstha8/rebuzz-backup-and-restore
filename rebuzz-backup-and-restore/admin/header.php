@@ -10,6 +10,7 @@ if (!defined('ABSPATH')) {
 $wpcbTabs = [
     'wpcb-dashboard' => __('Backups', 'rebuzz-backup-and-restore'),
     'wpcb-restore'   => __('Restore', 'rebuzz-backup-and-restore'),
+    'wpcb-schedule'  => __('Schedule', 'rebuzz-backup-and-restore'),
     'wpcb-settings'  => __('Settings', 'rebuzz-backup-and-restore'),
 ];
 

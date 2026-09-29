@@ -31,6 +31,13 @@ $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
 
 $storagePrivate = wpcb_storage_is_private();
 
+/* Schedule */
+
+$schedule = WPCB_Scheduler::settings();
+$nextRun = $schedule['frequency'] !== 'off' ? WPCB_Scheduler::nextRun() : 0;
+$scheduledNames = WPCB_Scheduler::scheduledBackups();
+$backgroundRunning = WPCB_Scheduler::runningJob() !== null;
+
 ?>
 
 <div class="wrap wpcb-wrap">
@@ -185,7 +192,31 @@ $storagePrivate = wpcb_storage_is_private();
             <span class="wpcb-stat-note"><code><?php echo esc_html(wpcb_display_path(wpcb_backups_dir()) . '/'); ?></code></span>
         </div>
 
+        <div class="wpcb-card">
+            <span class="wpcb-stat-label"><?php esc_html_e('Next backup', 'rebuzz-backup-and-restore'); ?></span>
+            <?php if ($nextRun) : ?>
+                <span class="wpcb-stat-value">
+                    <?php
+                    printf(
+                        /* translators: %s: time until the next backup, e.g. "5 hours" */
+                        esc_html__('In %s', 'rebuzz-backup-and-restore'),
+                        esc_html(human_time_diff(time(), $nextRun))
+                    );
+                    ?>
+                </span>
+                <span class="wpcb-stat-note">
+                    <?php echo esc_html($schedule['frequency'] === 'weekly' ? __('Weekly', 'rebuzz-backup-and-restore') : __('Daily', 'rebuzz-backup-and-restore')); ?>
+                    &middot; <?php echo esc_html(wp_date(get_option('date_format') . ' ' . get_option('time_format'), $nextRun)); ?>
+                </span>
+            <?php else : ?>
+                <span class="wpcb-stat-value"><?php esc_html_e('Not scheduled', 'rebuzz-backup-and-restore'); ?></span>
+                <span class="wpcb-stat-note"><a href="<?php echo esc_url(admin_url('admin.php?page=wpcb-schedule')); ?>"><?php esc_html_e('Set up automatic backups', 'rebuzz-backup-and-restore'); ?></a></span>
+            <?php endif; ?>
+        </div>
+
     </div>
+
+    <?php include WPCB_PATH . 'admin/running.php'; ?>
 
     <div class="wpcb-card">
 
@@ -198,7 +229,7 @@ $storagePrivate = wpcb_storage_is_private();
             <button
                 id="wpcb-create-backup"
                 class="button button-primary button-hero"
-                <?php disabled(!$storagePrivate); ?>>
+                <?php disabled(!$storagePrivate || $backgroundRunning); ?>>
                 <?php esc_html_e('Create Backup', 'rebuzz-backup-and-restore'); ?>
             </button>
 
@@ -253,7 +284,12 @@ $storagePrivate = wpcb_storage_is_private();
                     <tr data-backup-row="<?php echo esc_attr($backup['name']); ?>">
 
                         <td>
-                            <span class="wpcb-backup-date"><?php echo esc_html($backup['date']); ?></span>
+                            <span class="wpcb-backup-date">
+                                <?php echo esc_html($backup['date']); ?>
+                                <?php if (in_array($backup['name'], $scheduledNames, true)) : ?>
+                                    <span class="wpcb-tag"><?php esc_html_e('Scheduled', 'rebuzz-backup-and-restore'); ?></span>
+                                <?php endif; ?>
+                            </span>
                             <span class="wpcb-backup-file"><?php echo esc_html($backup['name']); ?></span>
                         </td>
 

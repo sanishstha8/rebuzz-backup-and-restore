@@ -139,6 +139,46 @@
     color: var(--wpcb-bad);
 }
 
+.wpcb-badge-warn {
+    color: #996800;
+}
+
+.wpcb-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    vertical-align: middle;
+    color: var(--wpcb-accent);
+    background: #f0f6fc;
+    border: 1px solid #c5d9ed;
+    border-radius: 999px;
+}
+
+.wpcb-running {
+    border-left: 4px solid var(--wpcb-accent);
+}
+
+.wpcb-running .wpcb-progress {
+    margin-top: 4px;
+}
+
+.wpcb-inline-status {
+    margin: 8px 0 0;
+    color: var(--wpcb-ok);
+}
+
+.wpcb-inline-status:empty {
+    display: none;
+}
+
+.wpcb-inline-status.is-error,
+.wpcb-loading.is-error {
+    color: var(--wpcb-bad);
+}
+
 /* Create backup / restore action area */
 
 .wpcb-action {

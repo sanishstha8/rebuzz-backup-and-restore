@@ -30,6 +30,11 @@ class WPCB_Deactivator
             wpcb_backup_lock_release();
         }
 
+        // Nothing would run the cron events; the schedule's settings stay for reactivation.
+        if (class_exists('WPCB_Scheduler')) {
+            WPCB_Scheduler::unscheduleAll();
+        }
+
         /*
          * Re-enable any mu-plugin an in-flight restore had renamed
          * aside. These are ordinary site functionality - often

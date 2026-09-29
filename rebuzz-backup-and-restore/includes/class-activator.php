@@ -60,6 +60,9 @@ class WPCB_Activator
         add_option('wpcb_settings', [
             'include_core' => true
         ]);
+
+        // Deactivation cleared the cron events; a saved schedule picks up again.
+        WPCB_Scheduler::reschedule();
     }
 
     /**

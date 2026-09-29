@@ -2534,6 +2534,9 @@ class WPCB_Restore_Job
         // The flush above ran before the restored plugins loaded, so their rewrite rules may be missing.
         wpcb_request_permalink_resave();
 
+        // The restored database brought back the schedule's cron events and state from backup time.
+        WPCB_Scheduler::afterRestore();
+
         /*
          * Succeeded, so the renamed copies stop being something to roll
          * back and become something for the admin to delete when they

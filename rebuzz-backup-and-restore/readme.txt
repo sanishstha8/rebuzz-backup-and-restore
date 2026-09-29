@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.6.0
+Stable tag: 1.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,7 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 = What it does =
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
+* **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
@@ -70,6 +71,22 @@ Yes. A network administrator can back up the whole network, while an individual 
 
 Every file and the database dump is hashed with SHA-256 when the backup is made, and those hashes are re-checked before the restore writes anything. If one doesn't match, the restore stops rather than continuing with a corrupt archive.
 
+= How do scheduled backups run without my browser open? =
+
+WordPress's scheduler (WP-Cron) starts the backup at the hour you picked. The site then asks itself for each step in turn, the same small steps a manual backup takes, so the same time and memory limits apply. If those requests are blocked by the host, WP-Cron carries the backup on by itself every few minutes, and a backup that stops making progress for ten minutes is marked failed and reported.
+
+= Why didn't my scheduled backup start exactly on time? =
+
+WP-Cron only runs when someone visits the site, so on a quiet site a backup can start a little late. If your host offers real cron jobs, point one at `wp-cron.php` every few minutes. If `DISABLE_WP_CRON` is set in wp-config.php, scheduled backups only run when your host runs `wp-cron.php` for you - the Schedule tab tells you when that's the case.
+
+= Will scheduled backups delete my other backups? =
+
+No. Only backups the schedule made on this site are ever deleted to keep the number you chose. Backups you create yourself, and ones you upload or copy in, are never deleted automatically.
+
+= I'm not receiving the emails. =
+
+Use **Send test email** on the Schedule tab. If that email doesn't arrive either, WordPress on your host can't send mail yet - an SMTP plugin usually fixes it. Check the spam folder too.
+
 == Screenshots ==
 
 1. The Backups tab: when the last backup ran, how much space backups use, whether the backup folder is private, and every backup ready to download, restore or delete.
@@ -77,8 +94,17 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 3. The Restore tab: pick a backup already on the server, or upload one.
 4. A finished restore, with a count of what it put back and the one step left: opening Permalink Settings.
 5. The Settings tab, with what each setting changes and the system details to share when asking for help.
+6. The Schedule tab: daily or weekly backups at a chosen hour, how many to keep, and email notices.
 
 == Changelog ==
+
+= 1.7.0 =
+* Added: scheduled backups, daily or weekly at an hour in your site's timezone, on a new Schedule tab. They run in the background with no browser open: the site requests each step itself, taking the same small steps as a manual backup, and WP-Cron carries the backup on if those requests are blocked. The chosen hour holds across daylight-saving changes.
+* Added: keep the last 1 to 50 scheduled backups. Older scheduled backups are deleted when a new one finishes; backups you make yourself, upload or copy in are never deleted.
+* Added: email notices to one or more addresses, either only when something goes wrong or after every scheduled backup, with a Send test email button.
+* Added: Run scheduled backup now, a Next backup card on the Backups tab, a Scheduled tag on backups the schedule made, and live progress of a background backup on both tabs.
+* Added: a scheduled backup that makes no progress for ten minutes is marked failed and reported, and releases its lock, instead of blocking later backups.
+* Changed: a scheduled backup never starts while a restore or another backup is running; it is skipped and reported instead.
 
 = 1.6.0 =
 * Changed: the plugin's screens are now tabs - Backups, Restore and Settings - under a single ReBuzz Backup menu item, laid out in cards. The Backups tab opens with when the last backup ran, how much space backups use and whether the backup folder is private. Links to the old Restore and Settings pages still work.
@@ -167,6 +193,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.7.0 =
+Adds scheduled daily or weekly backups that run in the background, keep the last few, and email you when something goes wrong.
 
 = 1.6.0 =
 A clearer, tabbed admin screen, a reminder to refresh your permalinks after a restore so plugin pages don't show "Page not found", and a fix for the Temporary Files panel that showed on every site.

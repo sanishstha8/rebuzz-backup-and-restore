@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.6.0
+ * Version: 1.7.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -48,6 +48,10 @@ if (!defined('ABSPATH')) {
         'wpcb_delete_backup',
         'wpcb_clear_temp',
         'wpcb_clear_foreign_backups',
+        'wpcb_run_schedule_now',
+        'wpcb_background_step',
+        'wpcb_background_status',
+        'wpcb_test_email',
     ];
 
     if (!in_array($action, $ours, true)) {
@@ -86,7 +90,7 @@ if (!defined('ABSPATH')) {
      * request that registers it, and wp_cron() runs on 'init', long
      * after this.
      */
-    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step'], true)) {
+    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step', 'wpcb_background_step'], true)) {
         add_filter('pre_get_ready_cron_jobs', '__return_empty_array');
     }
 
@@ -174,7 +178,7 @@ if (!defined('ABSPATH')) {
     });
 })();
 
-define('WPCB_VERSION', '1.6.0');
+define('WPCB_VERSION', '1.7.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 
