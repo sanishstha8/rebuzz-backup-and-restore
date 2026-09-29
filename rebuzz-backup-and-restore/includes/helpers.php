@@ -999,12 +999,58 @@ function wpcb_directory_size($dir)
     return $size;
 }
 
+/** The access-blocking files wpcb_protect_directory() writes into a folder. */
+function wpcb_guard_files()
+{
+    return ['.htaccess', 'web.config', 'index.php'];
+}
+
+/**
+ * Bytes of scratch files left by unfinished backups and restores.
+ * The temp folder's own guard files don't count: they are always
+ * there, so counting them showed the panel on every site.
+ */
+function wpcb_temp_usage()
+{
+    $temp = wpcb_temp_dir();
+    $size = wpcb_directory_size($temp);
+
+    foreach (wpcb_guard_files() as $guard) {
+        if (is_file($temp . '/' . $guard)) {
+            $size -= (int) filesize($temp . '/' . $guard);
+        }
+    }
+
+    // Restore workspaces live beside temp/, not in it - see wpcb_clear_stale_restore_workspaces().
+    foreach (wpcb_restore_workspace_dirs() as $restoreDir) {
+        $size += wpcb_directory_size($restoreDir);
+    }
+
+    return max(0, $size);
+}
+
+/** Shows the "open Permalink Settings" reminder on admin screens - see WPCB_Admin::permalink_notice(). */
+function wpcb_request_permalink_resave()
+{
+    update_option('wpcb_permalink_reminder', time(), false);
+}
+
+function wpcb_permalink_resave_pending()
+{
+    return (int) get_option('wpcb_permalink_reminder', 0) > 0;
+}
+
+function wpcb_clear_permalink_resave()
+{
+    delete_option('wpcb_permalink_reminder');
+}
+
 /**
  * Delete everything inside $dir (not $dir itself); returns bytes freed.
  * Used to clear temp/ from wp-admin (see WPCB_Admin::clear_temp()).
  * Never follows a symlink into its target, only removes the link.
  */
-function wpcb_clear_directory($dir)
+function wpcb_clear_directory($dir, array $keep = [])
 {
     if (!is_dir($dir)) {
         return 0;
@@ -1014,7 +1060,7 @@ function wpcb_clear_directory($dir)
 
     foreach (scandir($dir) as $item) {
 
-        if ($item === '.' || $item === '..') {
+        if ($item === '.' || $item === '..' || in_array($item, $keep, true)) {
             continue;
         }
 

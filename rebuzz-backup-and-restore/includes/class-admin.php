@@ -22,6 +22,9 @@ class WPCB_Admin
      */
     private $pageHooks = [];
 
+    /** Set when this request's Permalinks page load rebuilt the rules after a restore. */
+    private $permalinksRebuilt = false;
+
     /**
      * Bytes read per iteration when streaming an archive to the browser
      * - see download_backup(). Large enough that the per-read overhead
@@ -33,6 +36,7 @@ class WPCB_Admin
     public function __construct()
     {
         add_action('admin_menu', [$this, 'menu']);
+        add_action('admin_head', [$this, 'hide_tab_submenus']);
 
     
         add_action('admin_init', [$this, 'register_settings']);
@@ -63,6 +67,11 @@ class WPCB_Admin
         // shown on any admin screen, and deleted only when asked.
         add_action('admin_notices', [$this, 'old_directories_notice']);
         add_action('admin_post_wpcb_delete_old_directories', [$this, 'delete_old_directories']);
+
+        // Reminder after a restore, until Permalink Settings is opened or the notice is dismissed.
+        add_action('admin_notices', [$this, 'permalink_notice']);
+        add_action('load-options-permalink.php', [$this, 'permalinks_visited']);
+        add_action('admin_post_wpcb_dismiss_permalink_notice', [$this, 'dismiss_permalink_notice']);
     }
 
     /** Admin menu */
@@ -80,8 +89,8 @@ class WPCB_Admin
 
         $this->pageHooks[] = add_submenu_page(
             'wpcb-dashboard',
-            __('Dashboard', 'rebuzz-backup-and-restore'),
-            __('Dashboard', 'rebuzz-backup-and-restore'),
+            __('Backups', 'rebuzz-backup-and-restore'),
+            __('Backups', 'rebuzz-backup-and-restore'),
             'manage_options',
             'wpcb-dashboard',
             [$this, 'dashboard']
@@ -104,6 +113,18 @@ class WPCB_Admin
             'wpcb-settings',
             [$this, 'settings']
         );
+    }
+
+    /**
+     * The pages are tabs now, so the menu shows one item. Runs on
+     * admin_head: by then WordPress has resolved the page, its title and
+     * access from the submenu, and the menu hasn't been drawn yet.
+     */
+    public function hide_tab_submenus()
+    {
+        foreach (['wpcb-dashboard', 'wpcb-restore', 'wpcb-settings'] as $slug) {
+            remove_submenu_page('wpcb-dashboard', $slug);
+        }
     }
 
     /**
@@ -187,7 +208,13 @@ class WPCB_Admin
             'wpcb',
             [
                 'ajax_url' => admin_url('admin-ajax.php'),
-                'nonce'    => wp_create_nonce('wpcb_backup')
+                'nonce'    => wp_create_nonce('wpcb_backup'),
+                'permalinks_url' => admin_url('options-permalink.php'),
+                'i18n' => [
+                    'no_backups' => __('No backups yet. Backups you create, or ZIPs you upload to the backup folder, appear here.', 'rebuzz-backup-and-restore'),
+                    'permalinks' => __('One last step: open Permalink Settings. Opening that page rebuilds the link rules your plugins add, so no page shows "Page not found". You don\'t need to change anything there.', 'rebuzz-backup-and-restore'),
+                    'permalinks_button' => __('Open Permalink Settings', 'rebuzz-backup-and-restore'),
+                ],
             ]
         );
     }
@@ -378,7 +405,8 @@ public function clear_temp()
         wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
     }
 
-    $freed = wpcb_clear_directory(wpcb_temp_dir());
+    // Guard files stay: temp/ holds database dumps mid-backup.
+    $freed = wpcb_clear_directory(wpcb_temp_dir(), wpcb_guard_files());
 
     // Restore workspaces live as siblings of temp/, not inside it - see
     // wpcb_clear_stale_restore_workspaces(). Swept here too so this is
@@ -1262,6 +1290,75 @@ public static function crashedRequestJob($action)
     }
 
     return [$job, $kind];
+}
+
+/**
+ * After a restore: the rewrite rules were rebuilt before the restored
+ * plugins loaded, so ones they add (shop, forms, custom post types) can
+ * 404 until the Permalinks page is opened once.
+ */
+public function permalink_notice()
+{
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+
+    if ($this->permalinksRebuilt) {
+        echo '<div class="notice notice-success is-dismissible"><p>' .
+            esc_html__('Link rules rebuilt after your restore. Nothing else to do.', 'rebuzz-backup-and-restore') .
+            '</p></div>';
+        return;
+    }
+
+    if (!wpcb_permalink_resave_pending()) {
+        return;
+    }
+
+    $dismissUrl = wp_nonce_url(
+        admin_url('admin-post.php?action=wpcb_dismiss_permalink_notice'),
+        'wpcb_dismiss_permalink_notice'
+    );
+
+    ?>
+    <div class="notice notice-info">
+        <p>
+            <strong><?php esc_html_e('Your site was restored. One last step: open Permalink Settings.', 'rebuzz-backup-and-restore'); ?></strong>
+            <?php esc_html_e('Opening that page rebuilds the link rules your plugins add, so shop, product and other plugin pages don\'t show "Page not found". You don\'t need to change anything there.', 'rebuzz-backup-and-restore'); ?>
+        </p>
+        <p>
+            <a class="button button-primary" href="<?php echo esc_url(admin_url('options-permalink.php')); ?>">
+                <?php esc_html_e('Open Permalink Settings', 'rebuzz-backup-and-restore'); ?>
+            </a>
+            <a href="<?php echo esc_url($dismissUrl); ?>" style="margin-left:8px;">
+                <?php esc_html_e('Dismiss', 'rebuzz-backup-and-restore'); ?>
+            </a>
+        </p>
+    </div>
+    <?php
+}
+
+/** WordPress rebuilds the rewrite rules every time the Permalinks page loads, with all plugins active. */
+public function permalinks_visited()
+{
+    if (current_user_can('manage_options') && wpcb_permalink_resave_pending()) {
+        wpcb_clear_permalink_resave();
+        $this->permalinksRebuilt = true;
+    }
+}
+
+public function dismiss_permalink_notice()
+{
+    check_admin_referer('wpcb_dismiss_permalink_notice');
+
+    if (!current_user_can('manage_options')) {
+        wp_die(esc_html__('Permission denied.', 'rebuzz-backup-and-restore'));
+    }
+
+    wpcb_clear_permalink_resave();
+
+    wp_safe_redirect(wp_get_referer() ?: admin_url());
+
+    exit;
 }
 
 /**

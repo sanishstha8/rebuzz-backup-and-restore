@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.5.4
+Stable tag: 1.6.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -25,13 +25,14 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 * **Archives are not left guessable.** A backup is a complete copy of your site, database included, so every archive filename ends in 32 random characters - the file can't be downloaded without knowing that name. Web-server rules that deny direct access are written alongside them for Apache and IIS.
 * **Multisite aware.** A network administrator can back up the network; an individual site admin gets their own site and nothing else. The restore side enforces the same boundary, so nobody can drop another site's data onto theirs.
 * Free disk space and directory permissions are checked before a restore begins, so it fails early and safely rather than halfway through.
-* Leftover storage from All-in-One WP Migration and UpdraftPlus is detected, and you can clear it from the dashboard.
+* Leftover storage from All-in-One WP Migration and UpdraftPlus is detected, and you can clear it from the Backups tab.
+* After a restore, you're reminded to open Permalink Settings once, which rebuilds the link rules your plugins add so none of their pages show "Page not found".
 
 == Installation ==
 
 1. Upload the plugin files to `/wp-content/plugins/rebuzz-backup-and-restore`, or install it through the Plugins screen in WordPress.
 2. Activate it from the Plugins screen.
-3. Open **ReBuzz Backup > Dashboard** to make your first backup, or **ReBuzz Backup > Restore** to bring one back.
+3. Open **ReBuzz Backup** and click **Create Backup** to make your first backup, or use the **Restore** tab to bring one back.
 
 == Frequently Asked Questions ==
 
@@ -55,11 +56,11 @@ To fix it, move backups out of the web root by adding this to `wp-config.php`:
 
 `define( 'WPCB_BACKUP_DIR', '/full/path/outside/public_html/rebuzz-backups' );`
 
-The path must be absolute and writable by PHP, and should sit outside the folder your web server serves. Archives already in the old location are not moved automatically - the Dashboard will tell you they are there so you can move them yourself.
+The path must be absolute and writable by PHP, and should sit outside the folder your web server serves. Archives already in the old location are not moved automatically - the Backups tab will tell you they are there so you can move them yourself.
 
 = My backup is too big to upload. Now what? =
 
-Put the ZIP in `wp-content/uploads/rebuzz-backup-and-restore/backups/` using FTP or your host's file manager. It appears in the restore list automatically and skips the browser upload limit entirely. The exact path is also shown on **ReBuzz Backup > Dashboard**, under the backups list.
+Put the ZIP in `wp-content/uploads/rebuzz-backup-and-restore/backups/` using FTP or your host's file manager. It appears in the restore list automatically and skips the browser upload limit entirely. The exact path is also shown on the **ReBuzz Backup** screen, under the backups list.
 
 = Does it support Multisite? =
 
@@ -71,12 +72,20 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 
 == Screenshots ==
 
-1. A backup running in small batches, with elapsed time and an estimate of what's left.
-2. The dashboard: site details, the backup folder, and every backup ready to download, restore or delete.
-3. The Restore page: upload a backup ZIP, or pick one already on the server.
-4. A finished restore, with a count of the files, folders and database tables it put back.
+1. The Backups tab: when the last backup ran, how much space backups use, whether the backup folder is private, and every backup ready to download, restore or delete.
+2. A backup running in small batches, with elapsed time and an estimate of what's left.
+3. The Restore tab: pick a backup already on the server, or upload one.
+4. A finished restore, with a count of what it put back and the one step left: opening Permalink Settings.
+5. The Settings tab, with what each setting changes and the system details to share when asking for help.
 
 == Changelog ==
+
+= 1.6.0 =
+* Changed: the plugin's screens are now tabs - Backups, Restore and Settings - under a single ReBuzz Backup menu item, laid out in cards. The Backups tab opens with when the last backup ran, how much space backups use and whether the backup folder is private. Links to the old Restore and Settings pages still work.
+* Added: after a restore, a reminder to open Permalink Settings. The restore rebuilds the link rules before the restored plugins have loaded, so rules those plugins add - shop, product or form pages, for example - could show "Page not found". Opening that page rebuilds them and ends the reminder.
+* Added: the Settings tab explains what including WordPress core changes, and now holds the system information that used to fill the top of the dashboard.
+* Fixed: the Temporary Files panel showed on every site, reporting about 723 B, because the temporary folder's own access-blocking files were counted as leftovers. Clearing temporary files also deleted those files; they are now kept.
+* Fixed: other backup plugins' folders are listed only when they hold something to clear, instead of showing "0 B".
 
 = 1.5.4 =
 * Security: on hosts whose open_basedir setting keeps PHP out of the web root, a WPCB_BACKUP_DIR inside the web root was accepted as private, so backups saved there could be downloaded by anyone. PHP could not look up the web root there, and the check left it out instead of comparing against its path as written. It now compares against the path, so such a folder is refused and backups fall back to the uploads folder and its privacy test.
@@ -158,6 +167,9 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.6.0 =
+A clearer, tabbed admin screen, a reminder to refresh your permalinks after a restore so plugin pages don't show "Page not found", and a fix for the Temporary Files panel that showed on every site.
 
 = 1.5.4 =
 On hosts that use open_basedir, a WPCB_BACKUP_DIR inside the web root could be accepted as private, leaving backups downloadable. Recommended for anyone who has set WPCB_BACKUP_DIR.

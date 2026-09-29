@@ -62,6 +62,7 @@ function wpcb_uninstall_site()
 {
     delete_option('wpcb_settings');
     delete_option('wpcb_version');
+    delete_option('wpcb_permalink_reminder');
     // Legacy home of the moved-aside-folders record; it lives in a file now.
     delete_option('wpcb_quarantine');
 

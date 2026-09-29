@@ -2531,6 +2531,9 @@ class WPCB_Restore_Job
 
         $this->restoreCleanup();
 
+        // The flush above ran before the restored plugins loaded, so their rewrite rules may be missing.
+        wpcb_request_permalink_resave();
+
         /*
          * Succeeded, so the renamed copies stop being something to roll
          * back and become something for the admin to delete when they

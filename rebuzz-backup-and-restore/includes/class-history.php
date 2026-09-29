@@ -35,6 +35,7 @@ class WPCB_History
                 'name' => basename($file),
                 'path' => $file,
                 'size' => size_format(filesize($file), 2),
+                'bytes' => (int) filesize($file),
                 // wp_date(), not gmdate(): this one is shown to the user in
                 // the backups list, so it should read in the site's own
                 // timezone rather than UTC.

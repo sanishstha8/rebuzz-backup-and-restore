@@ -370,6 +370,18 @@ jQuery(function ($) {
 
                     renderNotice($('#wpcb-restore-status'), noticeClass, state.message, true);
 
+                    // Rewrite rules were rebuilt before the restored plugins loaded - see permalink_notice().
+                    $('#wpcb-restore-status').append(
+                        $('<div class="notice notice-info"></div>').append(
+                            $('<p></p>').text(wpcb.i18n.permalinks),
+                            $('<p></p>').append(
+                                $('<a class="button button-primary"></a>')
+                                    .attr('href', wpcb.permalinks_url)
+                                    .text(wpcb.i18n.permalinks_button)
+                            )
+                        )
+                    );
+
                     return;
                 }
 
@@ -573,7 +585,7 @@ jQuery(function ($) {
                     if ($tbody.find('tr').length === 0) {
 
                         $tbody.closest('table').replaceWith(
-                            '<p>No backups available.</p>'
+                            $('<p class="wpcb-empty"></p>').text(wpcb.i18n.no_backups)
                         );
                     }
                 });
