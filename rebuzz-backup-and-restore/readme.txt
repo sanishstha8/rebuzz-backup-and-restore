@@ -69,6 +69,13 @@ Yes. A network administrator can back up the whole network, while an individual 
 
 Every file and the database dump is hashed with SHA-256 when the backup is made, and those hashes are re-checked before the restore writes anything. If one doesn't match, the restore stops rather than continuing with a corrupt archive.
 
+== Screenshots ==
+
+1. A backup running in small batches, with elapsed time and an estimate of what's left.
+2. The dashboard: site details, the backup folder, and every backup ready to download, restore or delete.
+3. The Restore page: upload a backup ZIP, or pick one already on the server.
+4. A finished restore, with a count of the files, folders and database tables it put back.
+
 == Changelog ==
 
 = 1.5.4 =
