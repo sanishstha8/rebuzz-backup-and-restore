@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.7.0
+Stable tag: 1.8.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,6 +20,7 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
 * **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
+* **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others) or to Dropbox, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
@@ -87,6 +88,38 @@ No. Only backups the schedule made on this site are ever deleted to keep the num
 
 Use **Send test email** on the Schedule tab. If that email doesn't arrive either, WordPress on your host can't send mail yet - an SMTP plugin usually fixes it. Check the spam folder too.
 
+= Which cloud storage can I use? =
+
+Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi, or any other S3-compatible storage you give an endpoint for - and Dropbox. Set them up on the Storage tab; **Test connection** writes a small file and deletes it again, so you know uploads will work before the first backup. Google Drive is planned for a later version.
+
+= Are my storage keys safe? =
+
+The S3 secret key and the Dropbox access are stored encrypted, with a key made from the secret keys in your `wp-config.php`. Backups include your database but never `wp-config.php`, so a backup only ever carries the encrypted form. The form never shows a saved secret again. After moving the site to a server with different secret keys, enter the secret again or reconnect Dropbox.
+
+= My server died. How do I restore from the cloud? =
+
+Install WordPress and this plugin on the new server, set up the same storage on the Storage tab, click **Show backups**, then **Download to this site** next to the backup you want. It then appears on the Restore tab like any other backup.
+
+= What does "Keep a copy here too" do? =
+
+With it ticked (the default), each backup stays on your server as well as in the cloud. Untick it to save disk space: the copy on your server is deleted once the backup has reached every place you chose. If any upload fails, the copy on your server is always kept.
+
+== External services ==
+
+This plugin connects to cloud storage only when an administrator sets it up on the Storage tab. Until then nothing is sent anywhere.
+
+= Amazon S3 and S3-compatible storage =
+
+Stores copies of your backups. The plugin sends requests to the endpoint you entered - for example `s3.us-east-1.amazonaws.com`, or your Backblaze B2, Cloudflare R2, DigitalOcean Spaces or Wasabi endpoint - when a backup is sent there, when you list, download or delete backups there, when older backups are deleted to keep the number you chose, and when you click Test connection. The requests carry your access key ID, a signature made with your secret key, the file names and the backup archives themselves, which contain your site's files and database.
+
+Each service's own terms apply: Amazon S3 ([terms](https://aws.amazon.com/service-terms/), [privacy](https://aws.amazon.com/privacy/)), Backblaze B2 ([terms](https://www.backblaze.com/company/policy/terms-of-service), [privacy](https://www.backblaze.com/company/privacy.html)), Cloudflare R2 ([terms](https://www.cloudflare.com/terms/), [privacy](https://www.cloudflare.com/privacypolicy/)), DigitalOcean Spaces ([terms](https://www.digitalocean.com/legal/terms-of-service-agreement), [privacy](https://www.digitalocean.com/legal/privacy-policy)), Wasabi ([terms and privacy](https://wasabi.com/legal)). For any other S3-compatible service, that service's terms apply.
+
+= Dropbox =
+
+Stores copies of your backups in a folder of the plugin's own under Apps in your Dropbox. Connecting opens dropbox.com, where you approve access; the code you paste back is exchanged at `api.dropboxapi.com` for access tokens. After that the plugin contacts `api.dropboxapi.com` and `content.dropboxapi.com` when a backup is sent, listed, downloaded or deleted, when older backups are deleted to keep the number you chose, and when you click Test connection. The requests carry the access token, the file names and the backup archives themselves. Disconnecting asks Dropbox to revoke the access.
+
+Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy](https://www.dropbox.com/privacy) apply.
+
 == Screenshots ==
 
 1. The Backups tab: when the last backup ran, how much space backups use, whether the backup folder is private, and every backup ready to download, restore or delete.
@@ -95,8 +128,18 @@ Use **Send test email** on the Schedule tab. If that email doesn't arrive either
 4. A finished restore, with a count of what it put back and the one step left: opening Permalink Settings.
 5. The Settings tab, with what each setting changes and the system details to share when asking for help.
 6. The Schedule tab: daily or weekly backups at a chosen hour, how many to keep, and email notices.
+7. The Storage tab: S3-compatible storage and Dropbox, which backups to send, and the backups already in the cloud.
 
 == Changelog ==
+
+= 1.8.0 =
+* Added: cloud storage, on a new Storage tab. Backups can go to Amazon S3 and S3-compatible services (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others, signed with Signature V4) and to Dropbox (connected with a code you paste, into the plugin's own app folder). Test connection writes and deletes a small file.
+* Added: new backups are sent automatically - scheduled ones only, or every backup - in 8 MB pieces across many short requests, so large backups fit shared-hosting limits. A failed upload is retried, then reported as a warning; the backup itself is never lost.
+* Added: keep the last 1 to 100 backups in each place. Only backups this site uploaded automatically are deleted; other files in the bucket or folder, and backups you send by hand, are never touched.
+* Added: Backups in the cloud - list them, download one back to the server to restore it (onto the same site or a new one), or delete one. Send a backup you already have from the same tab.
+* Added: an option to remove the copy on the server once a backup has reached every place chosen; if any upload fails, the local copy is kept.
+* Added: S3 and Dropbox tags on the Backups tab, and upload results in the finished-backup message and the email.
+* Security: the S3 secret and the Dropbox tokens are stored encrypted with a key derived from wp-config.php's secret keys, so backups - which contain the database - only hold the encrypted form.
 
 = 1.7.0 =
 * Added: scheduled backups, daily or weekly at an hour in your site's timezone, on a new Schedule tab. They run in the background with no browser open: the site requests each step itself, taking the same small steps as a manual backup, and WP-Cron carries the backup on if those requests are blocked. The chosen hour holds across daylight-saving changes.
@@ -194,6 +237,9 @@ Use **Send test email** on the Schedule tab. If that email doesn't arrive either
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.8.0 =
+Adds cloud copies of your backups on Amazon S3, S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi) and Dropbox, with a way to bring them back to restore.
 
 = 1.7.0 =
 Adds scheduled daily or weekly backups that run in the background, keep the last few, and email you when something goes wrong.

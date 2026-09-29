@@ -72,6 +72,10 @@ class WPCB_Backup_Job
                 return $this->stepValidation();
 
 
+            case 5:
+                return $this->stepUpload();
+
+
             default:
                 return $this->finish();
 
@@ -625,7 +629,8 @@ class WPCB_Backup_Job
 
             'step' => 5,
 
-            'progress' => 100,
+            // The last tenth is left for uploading, when the Storage tab asks for it.
+            'progress' => WPCB_Storage::plannedUploads($state) ? 90 : 100,
 
             'message' => __('Backup validated.', 'rebuzz-backup-and-restore')
 
@@ -635,6 +640,17 @@ class WPCB_Backup_Job
 
         return true;
 
+    }
+
+
+    /** Sends the backup to cloud storage, one chunk per call - see WPCB_Storage::uploadStep(). */
+    private function stepUpload()
+    {
+        if (WPCB_Storage::uploadStep($this->job)) {
+            $this->job->update(['step' => 6]);
+        }
+
+        return true;
     }
 
 
@@ -670,6 +686,12 @@ class WPCB_Backup_Job
                 wpcb_display_path(wpcb_logs_dir() . '/backup.log')
             )
             : __('Backup completed successfully.', 'rebuzz-backup-and-restore');
+
+        $uploadLines = WPCB_Storage::summaryLines($state['upload'] ?? []);
+
+        if ($uploadLines) {
+            $message .= "\n" . implode("\n", $uploadLines);
+        }
 
         $this->job->update([
 

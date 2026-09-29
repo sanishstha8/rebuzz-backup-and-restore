@@ -121,6 +121,15 @@ class WPCB_Admin
 
         $this->pageHooks[] = add_submenu_page(
             'wpcb-dashboard',
+            __('Storage', 'rebuzz-backup-and-restore'),
+            __('Storage', 'rebuzz-backup-and-restore'),
+            'manage_options',
+            'wpcb-storage',
+            [$this, 'storage']
+        );
+
+        $this->pageHooks[] = add_submenu_page(
+            'wpcb-dashboard',
             __('Settings', 'rebuzz-backup-and-restore'),
             __('Settings', 'rebuzz-backup-and-restore'),
             'manage_options',
@@ -136,7 +145,7 @@ class WPCB_Admin
      */
     public function hide_tab_submenus()
     {
-        foreach (['wpcb-dashboard', 'wpcb-restore', 'wpcb-schedule', 'wpcb-settings'] as $slug) {
+        foreach (['wpcb-dashboard', 'wpcb-restore', 'wpcb-schedule', 'wpcb-storage', 'wpcb-settings'] as $slug) {
             remove_submenu_page('wpcb-dashboard', $slug);
         }
     }
@@ -241,6 +250,14 @@ class WPCB_Admin
                     'sending' => __('Sending...', 'rebuzz-backup-and-restore'),
                     'no_server' => __('Unable to contact server.', 'rebuzz-backup-and-restore'),
                     'bg_done' => __('Finished. Refreshing...', 'rebuzz-backup-and-restore'),
+                    'working' => __('Working...', 'rebuzz-backup-and-restore'),
+                    'open_dropbox' => __('Your browser blocked the new tab. Click here to open Dropbox.', 'rebuzz-backup-and-restore'),
+                    'disconnect_confirm' => __('Disconnect Dropbox? Backups already there stay in your Dropbox.', 'rebuzz-backup-and-restore'),
+                    'cloud_empty' => __('No backups there yet.', 'rebuzz-backup-and-restore'),
+                    'on_server' => __('On this server', 'rebuzz-backup-and-restore'),
+                    'download' => __('Download to this site', 'rebuzz-backup-and-restore'),
+                    'delete' => __('Delete', 'rebuzz-backup-and-restore'),
+                    'cloud_delete_confirm' => __('Delete this backup from the cloud permanently? This cannot be undone.', 'rebuzz-backup-and-restore'),
                 ],
             ]
         );
@@ -262,6 +279,12 @@ class WPCB_Admin
     public function schedule()
     {
         include WPCB_PATH . 'admin/schedule.php';
+    }
+
+    /** Storage page */
+    public function storage()
+    {
+        include WPCB_PATH . 'admin/storage.php';
     }
 
     /** Starts a scheduled-style backup now: in the background, with the schedule's keep and email settings. */
@@ -1348,6 +1371,8 @@ public static function crashedRequestJob($action)
         'wpcb_backup_step'       => 'backup',
         'wpcb_run_schedule_now'  => 'backup',
         'wpcb_background_step'   => 'backup',
+        'wpcb_transfer_start'    => 'backup',
+        'wpcb_transfer_step'     => 'backup',
         'wpcb_start_restore'     => 'restore',
         'wpcb_restore_step'      => 'restore',
     ];

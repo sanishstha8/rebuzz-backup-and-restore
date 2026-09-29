@@ -75,6 +75,13 @@ function wpcb_uninstall_site()
     delete_option('wpcb_schedule_state');
     delete_option('wpcb_scheduled_backups');
 
+    // Cloud storage settings and the encrypted credentials. Backups already in the cloud stay there.
+    delete_option('wpcb_storage');
+    delete_option('wpcb_remote_secrets');
+    delete_option('wpcb_dropbox');
+    delete_option('wpcb_remote_uploaded');
+    delete_option('wpcb_remote_sent');
+
     // Legacy home of the moved-aside-folders record; it lives in a file now.
     delete_option('wpcb_quarantine');
 

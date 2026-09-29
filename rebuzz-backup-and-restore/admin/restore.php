@@ -113,6 +113,21 @@ $backToList = admin_url('admin.php?page=wpcb-restore');
 
                 <p><?php esc_html_e('A backup ZIP made by ReBuzz Backup and Restore on this site or on another one. It is checked before anything is restored.', 'rebuzz-backup-and-restore'); ?></p>
 
+                <?php if (WPCB_Storage::remotes()) : ?>
+                    <p>
+                        <?php
+                        printf(
+                            wp_kses(
+                                /* translators: %s: link to the Storage tab */
+                                __('Backup in the cloud? Download it to this site from the %s tab first, and it appears in the list.', 'rebuzz-backup-and-restore'),
+                                ['a' => ['href' => []]]
+                            ),
+                            '<a href="' . esc_url(admin_url('admin.php?page=wpcb-storage')) . '">' . esc_html__('Storage', 'rebuzz-backup-and-restore') . '</a>'
+                        );
+                        ?>
+                    </p>
+                <?php endif; ?>
+
                 <form
                     class="wpcb-upload-form"
                     method="post"

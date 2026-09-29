@@ -157,6 +157,71 @@
     border-radius: 999px;
 }
 
+.wpcb-tag-ok {
+    color: var(--wpcb-ok);
+    background: #edfaef;
+    border-color: #b8e6bf;
+}
+
+.wpcb-card > h2 .wpcb-tag {
+    font-size: 11px;
+}
+
+/* Storage tab */
+
+.wpcb-compact th {
+    width: 140px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+.wpcb-compact td {
+    padding-top: 8px;
+    padding-bottom: 8px;
+}
+
+.wpcb-compact .regular-text {
+    width: 100%;
+    max-width: 25em;
+}
+
+.wpcb-steps {
+    margin: 12px 0 0 18px;
+}
+
+.wpcb-steps li {
+    margin-bottom: 16px;
+}
+
+.wpcb-steps .description {
+    margin-top: 4px;
+}
+
+.wpcb-remote {
+    padding: 14px 0;
+    border-top: 1px solid #f0f0f1;
+}
+
+.wpcb-remote-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+}
+
+.wpcb-remote-head .button {
+    margin-left: auto;
+}
+
+.wpcb-remote-body .wpcb-backups,
+.wpcb-remote-body .wpcb-empty {
+    margin-top: 12px;
+}
+
+.wpcb-remote-status:empty {
+    display: none;
+}
+
 .wpcb-running {
     border-left: 4px solid var(--wpcb-accent);
 }

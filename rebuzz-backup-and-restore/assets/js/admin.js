@@ -130,7 +130,7 @@ jQuery(function ($) {
                     // files skipped (state.files_failed), and that
                     // needs to actually reach the screen instead of
                     // always showing a plain success message.
-                    var noticeClass = state.files_failed
+                    var noticeClass = (state.files_failed || state.upload_failed)
                         ? 'notice-warning'
                         : 'notice-success';
 
@@ -780,6 +780,339 @@ jQuery(function ($) {
                 $button.prop('disabled', false);
                 $status.addClass('is-error').text(wpcb.i18n.no_server);
             });
+    });
+
+    /** Storage tab: S3 fields that apply to the chosen service. */
+
+    function toggleS3Rows() {
+
+        var provider = $('#wpcb-s3-provider').val();
+        var needsEndpoint = provider === 'r2' || provider === 'other';
+
+        $('.wpcb-s3-region-row').toggle(provider !== 'r2');
+        $('.wpcb-s3-endpoint-row').toggle(needsEndpoint);
+        $('.wpcb-s3-path-row').toggle(provider === 'other');
+        $('.wpcb-s3-r2-note').toggle(provider === 'r2');
+        $('.wpcb-s3-other-note').toggle(provider === 'other');
+        $('.wpcb-s3-b2-note').toggle(provider === 'b2');
+        $('#wpcb-s3-region').attr('placeholder', $('#wpcb-s3-provider option:selected').data('region') || '');
+    }
+
+    if ($('#wpcb-s3-provider').length) {
+        toggleS3Rows();
+        $('#wpcb-s3-provider').on('change', toggleS3Rows);
+    }
+
+    /** Runs a Storage-tab action and shows its answer next to the button. */
+    function storageAction($button, $status, data, onSuccess, onFail) {
+
+        $button.prop('disabled', true);
+        $status.removeClass('is-error').text(wpcb.i18n.working);
+
+        $.post(wpcb.ajax_url, $.extend({ nonce: wpcb.nonce }, data), null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+
+                    if (onFail) {
+                        onFail();
+                    }
+
+                    return;
+                }
+
+                $status.text(typeof response.data === 'string' ? response.data : '');
+
+                if (onSuccess) {
+                    onSuccess(response.data);
+                }
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+
+                if (onFail) {
+                    onFail();
+                }
+            })
+            .always(function () {
+                $button.prop('disabled', false);
+            });
+    }
+
+    $('#wpcb-s3-test').on('click', function () {
+
+        var data = { action: 'wpcb_s3_test' };
+
+        // The fields as typed, saved or not.
+        $('[name^="wpcb_storage[s3]"]').each(function () {
+
+            var key = this.name.replace('wpcb_storage[s3]', 's3');
+
+            if (this.type === 'checkbox') {
+                data[key] = this.checked ? 1 : 0;
+            } else {
+                data[key] = $(this).val();
+            }
+        });
+
+        storageAction($(this), $('#wpcb-s3-status'), data);
+    });
+
+    /** Dropbox: open the consent page, then trade the pasted code for access. */
+
+    $('#wpcb-dropbox-start').on('click', function () {
+
+        // Opened now, while the click still counts, or pop-up blockers stop it.
+        var win = window.open('', '_blank');
+
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_start' }, function (data) {
+
+            if (win) {
+                win.location = data.url;
+            } else {
+                $('#wpcb-dropbox-link').show().empty().append(
+                    $('<a target="_blank" rel="noopener"></a>').attr('href', data.url).text(wpcb.i18n.open_dropbox)
+                );
+            }
+
+            $('#wpcb-dropbox-code').trigger('focus');
+        }, function () {
+            if (win) {
+                win.close();
+            }
+        });
+    });
+
+    $('#wpcb-dropbox-finish').on('click', function () {
+
+        storageAction($(this), $('#wpcb-dropbox-status'), {
+            action: 'wpcb_dropbox_finish',
+            code: $('#wpcb-dropbox-code').val()
+        }, function () {
+            setTimeout(function () {
+                location.reload();
+            }, 800);
+        });
+    });
+
+    $('#wpcb-dropbox-test').on('click', function () {
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_test' });
+    });
+
+    $('#wpcb-dropbox-disconnect').on('click', function () {
+
+        if (!window.confirm(wpcb.i18n.disconnect_confirm)) {
+            return;
+        }
+
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_disconnect' }, function () {
+            location.reload();
+        });
+    });
+
+    /** Drives a Storage-tab transfer one chunk per request, like a manual backup. */
+
+    function runTransfer(jobId, $box, onDone) {
+
+        var $bar = $box.find('.wpcb-progress-bar');
+        var $status = $box.find('.wpcb-remote-status');
+        var retries = 0;
+
+        $box.find('.wpcb-transfer-progress').show();
+
+        function step() {
+
+            $.post(wpcb.ajax_url, {
+                action: 'wpcb_transfer_step',
+                nonce: wpcb.nonce,
+                job_id: jobId
+            }, null, 'json')
+                .done(function (response) {
+
+                    retries = 0;
+
+                    if (!response.success) {
+                        $status.addClass('is-error').text(response.data);
+                        onDone(false);
+                        return;
+                    }
+
+                    var state = response.data;
+
+                    $bar.css('width', state.progress + '%').text(state.progress + '%');
+                    $status.toggleClass('is-error', state.status === 'failed').text(state.message);
+
+                    if (state.status === 'running') {
+                        setTimeout(step, 200);
+                        return;
+                    }
+
+                    onDone(state.status === 'completed');
+                })
+                .fail(function () {
+
+                    if (retries++ < 5) {
+                        setTimeout(step, 3000);
+                        return;
+                    }
+
+                    $status.addClass('is-error').text(wpcb.i18n.no_server);
+                    onDone(false);
+                });
+        }
+
+        step();
+    }
+
+    function startTransfer(direction, remote, name, $box, onDone) {
+
+        var $status = $box.find('.wpcb-remote-status');
+
+        $status.removeClass('is-error').text(wpcb.i18n.starting);
+        $box.find('.wpcb-progress-bar').css('width', '0%').text('0%');
+
+        $.post(wpcb.ajax_url, {
+            action: 'wpcb_transfer_start',
+            nonce: wpcb.nonce,
+            direction: direction,
+            remote: remote,
+            name: name
+        }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+                    onDone(false);
+                    return;
+                }
+
+                runTransfer(response.data.job_id, $box, onDone);
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+                onDone(false);
+            });
+    }
+
+    /** Backups in one cloud destination, with Download and Delete. */
+
+    // keepStatus: a refresh after a transfer, whose result message should stay on screen.
+    function loadRemote($box, keepStatus) {
+
+        var remote = $box.data('remote');
+        var $body = $box.find('.wpcb-remote-body');
+        var $status = $box.find('.wpcb-remote-status');
+
+        if (!keepStatus) {
+            $status.removeClass('is-error').text(wpcb.i18n.working);
+        }
+
+        $.post(wpcb.ajax_url, { action: 'wpcb_remote_list', nonce: wpcb.nonce, remote: remote }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+                    return;
+                }
+
+                if (!keepStatus) {
+                    $status.text('');
+                }
+
+                $body.empty();
+
+                if (!response.data.length) {
+                    $body.append($('<p class="wpcb-empty"></p>').text(wpcb.i18n.cloud_empty));
+                    return;
+                }
+
+                var $tbody = $('<tbody></tbody>');
+
+                $.each(response.data, function (i, item) {
+
+                    var $name = $('<td></td>')
+                        .append($('<span class="wpcb-backup-date"></span>').text(item.date))
+                        .append($('<span class="wpcb-backup-file"></span>').text(item.name));
+
+                    if (item.local) {
+                        $name.find('.wpcb-backup-date').append($('<span class="wpcb-tag"></span>').text(wpcb.i18n.on_server));
+                    }
+
+                    var $actions = $('<td class="wpcb-col-actions"></td>')
+                        .append($('<button type="button" class="button wpcb-remote-download"></button>').text(wpcb.i18n.download).prop('disabled', item.local))
+                        .append($('<button type="button" class="button button-link-delete wpcb-remote-delete"></button>').text(wpcb.i18n.delete));
+
+                    $tbody.append(
+                        $('<tr></tr>').attr('data-name', item.name)
+                            .append($name)
+                            .append($('<td class="wpcb-col-size"></td>').text(item.size))
+                            .append($actions)
+                    );
+                });
+
+                $body.append($('<table class="widefat striped wpcb-backups"></table>').append($tbody));
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            });
+    }
+
+    $('.wpcb-remote-show').on('click', function () {
+        loadRemote($(this).closest('.wpcb-remote'));
+    });
+
+    $(document).on('click', '.wpcb-remote-download', function () {
+
+        var $box = $(this).closest('.wpcb-remote');
+        var name = $(this).closest('tr').data('name');
+
+        $box.find('button').prop('disabled', true);
+
+        startTransfer('down', $box.data('remote'), name, $box, function () {
+            $box.find('button').prop('disabled', false);
+            loadRemote($box, true);
+        });
+    });
+
+    $(document).on('click', '.wpcb-remote-delete', function () {
+
+        var $box = $(this).closest('.wpcb-remote');
+        var $row = $(this).closest('tr');
+
+        if (!window.confirm(wpcb.i18n.cloud_delete_confirm)) {
+            return;
+        }
+
+        storageAction($(this), $box.find('.wpcb-remote-status'), {
+            action: 'wpcb_remote_delete',
+            remote: $box.data('remote'),
+            name: $row.data('name')
+        }, function () {
+            $row.fadeOut(200, function () {
+                $row.remove();
+            });
+        });
+    });
+
+    $('#wpcb-send-start').on('click', function () {
+
+        var $box = $('#wpcb-send-existing');
+        var remote = $('#wpcb-send-remote').val();
+
+        $box.find('button, select').prop('disabled', true);
+
+        startTransfer('up', remote, $('#wpcb-send-file').val(), $box, function () {
+
+            $box.find('button, select').prop('disabled', false);
+
+            // Refresh that destination's list if it's open.
+            var $list = $('.wpcb-remote[data-remote="' + remote + '"]');
+
+            if ($list.find('table, .wpcb-empty').length) {
+                loadRemote($list, true);
+            }
+        });
     });
 
     /** Clears other plugins' backup data. */

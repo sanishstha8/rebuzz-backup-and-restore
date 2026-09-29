@@ -33,6 +33,10 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-zip-batch.php';
         require_once WPCB_PATH . 'includes/class-integrity.php';
         require_once WPCB_PATH . 'includes/class-scheduler.php';
+        require_once WPCB_PATH . 'includes/class-remote.php';
+        require_once WPCB_PATH . 'includes/class-remote-s3.php';
+        require_once WPCB_PATH . 'includes/class-remote-dropbox.php';
+        require_once WPCB_PATH . 'includes/class-storage.php';
 
         /*
          * Holds WordPress's auto-updater off while a restore is
@@ -63,5 +67,7 @@ class WPCB_Loader
 
         // Every request, not admin-only: its cron hooks fire from wp-cron.php.
         new WPCB_Scheduler();
+
+        new WPCB_Storage();
     }
 }

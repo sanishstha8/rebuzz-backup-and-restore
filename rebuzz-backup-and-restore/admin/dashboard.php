@@ -289,6 +289,9 @@ $backgroundRunning = WPCB_Scheduler::runningJob() !== null;
                                 <?php if (in_array($backup['name'], $scheduledNames, true)) : ?>
                                     <span class="wpcb-tag"><?php esc_html_e('Scheduled', 'rebuzz-backup-and-restore'); ?></span>
                                 <?php endif; ?>
+                                <?php foreach (WPCB_Storage::uploadedTo($backup['name']) as $cloudId) : ?>
+                                    <span class="wpcb-tag wpcb-tag-ok"><?php echo esc_html($cloudId === 's3' ? 'S3' : 'Dropbox'); ?></span>
+                                <?php endforeach; ?>
                             </span>
                             <span class="wpcb-backup-file"><?php echo esc_html($backup['name']); ?></span>
                         </td>

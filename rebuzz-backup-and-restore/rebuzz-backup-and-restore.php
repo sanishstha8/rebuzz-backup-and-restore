@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.7.0
+ * Version: 1.8.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -52,6 +52,15 @@ if (!defined('ABSPATH')) {
         'wpcb_background_step',
         'wpcb_background_status',
         'wpcb_test_email',
+        'wpcb_s3_test',
+        'wpcb_dropbox_start',
+        'wpcb_dropbox_finish',
+        'wpcb_dropbox_disconnect',
+        'wpcb_dropbox_test',
+        'wpcb_remote_list',
+        'wpcb_remote_delete',
+        'wpcb_transfer_start',
+        'wpcb_transfer_step',
     ];
 
     if (!in_array($action, $ours, true)) {
@@ -90,7 +99,7 @@ if (!defined('ABSPATH')) {
      * request that registers it, and wp_cron() runs on 'init', long
      * after this.
      */
-    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step', 'wpcb_background_step'], true)) {
+    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step', 'wpcb_background_step', 'wpcb_transfer_step'], true)) {
         add_filter('pre_get_ready_cron_jobs', '__return_empty_array');
     }
 
@@ -178,9 +187,14 @@ if (!defined('ABSPATH')) {
     });
 })();
 
-define('WPCB_VERSION', '1.7.0');
+define('WPCB_VERSION', '1.8.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
+
+// The plugin's Dropbox app (App folder access). wp-config.php can set its own.
+if (!defined('WPCB_DROPBOX_APP_KEY')) {
+    define('WPCB_DROPBOX_APP_KEY', '');
+}
 
 require_once WPCB_PATH . 'includes/class-activator.php';
 require_once WPCB_PATH . 'includes/class-deactivator.php';
