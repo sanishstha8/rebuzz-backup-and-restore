@@ -258,6 +258,8 @@ class WPCB_Admin
                     'download' => __('Download to this site', 'rebuzz-backup-and-restore'),
                     'delete' => __('Delete', 'rebuzz-backup-and-restore'),
                     'cloud_delete_confirm' => __('Delete this backup from the cloud permanently? This cannot be undone.', 'rebuzz-backup-and-restore'),
+                    'cancel_confirm' => __('Stop this transfer? The part already transferred is removed; you can start it again at any time.', 'rebuzz-backup-and-restore'),
+                    'cancelling' => __('Stopping...', 'rebuzz-backup-and-restore'),
                 ],
             ]
         );
@@ -601,6 +603,10 @@ public function start_backup()
     // job start and write into the same temp/backups directories
     // concurrently, corrupting either or both archives.
     $activeJobId = wpcb_backup_lock_check();
+
+    if ($activeJobId !== null && ((new WPCB_Job($activeJobId))->get()['kind'] ?? '') === 'transfer') {
+        wp_send_json_error(__('A backup is being downloaded from or sent to the cloud. Wait for it to finish, or reload this page to see it at the top, where you can cancel it.', 'rebuzz-backup-and-restore'));
+    }
 
     if ($activeJobId !== null) {
         wp_send_json_error(
@@ -1373,6 +1379,7 @@ public static function crashedRequestJob($action)
         'wpcb_background_step'   => 'backup',
         'wpcb_transfer_start'    => 'backup',
         'wpcb_transfer_step'     => 'backup',
+        'wpcb_transfer_cancel'   => 'backup',
         'wpcb_start_restore'     => 'restore',
         'wpcb_restore_step'      => 'restore',
     ];

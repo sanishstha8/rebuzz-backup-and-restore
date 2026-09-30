@@ -222,8 +222,12 @@ class WPCB_Scheduler
                 return self::skip(__('A restore was running, so no backup was made.', 'rebuzz-backup-and-restore'));
             }
 
-            if (wpcb_backup_lock_check() !== null) {
-                return self::skip(__('Another backup was already running.', 'rebuzz-backup-and-restore'));
+            $active = wpcb_backup_lock_check();
+
+            if ($active !== null) {
+                return self::skip(((new WPCB_Job($active))->get()['kind'] ?? '') === 'transfer'
+                    ? __('A backup was being downloaded from or sent to the cloud, so no backup was made.', 'rebuzz-backup-and-restore')
+                    : __('Another backup was already running.', 'rebuzz-backup-and-restore'));
             }
 
             if (!wpcb_storage_is_private()) {
@@ -469,7 +473,7 @@ class WPCB_Scheduler
         // Kept until the next run starts, so a late second caller can't claim it again.
         $claim = 'wpcb_schedule_done_' . md5($job->id());
 
-        if (!add_option($claim, time(), '', false)) {
+        if (!wpcb_claim_once($claim, time())) {
             return;
         }
 

@@ -1944,6 +1944,74 @@ function wpcb_backup_lock_check()
 }
 
 /**
+ * A MySQL named lock: true if this request now holds $name, false if
+ * another request does. The database drops it when the request ends,
+ * even on a fatal error, so it is never left behind. Where named locks
+ * aren't available it always succeeds, as if there were no lock.
+ */
+function wpcb_lock($name)
+{
+    global $wpdb;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a lock, not data.
+    $got = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', wpcb_lock_name($name)));
+
+    return $got === null || (int) $got === 1;
+}
+
+function wpcb_unlock($name)
+{
+    global $wpdb;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a lock, not data.
+    $wpdb->query($wpdb->prepare('SELECT RELEASE_LOCK(%s)', wpcb_lock_name($name)));
+}
+
+/** Named locks are shared by every database on the server, so the name carries this site's database and prefix. */
+function wpcb_lock_name($name)
+{
+    global $wpdb;
+
+    return 'wpcb_' . md5(DB_NAME . '|' . $wpdb->prefix . '|' . $name);
+}
+
+/**
+ * Stores $name only if it doesn't exist yet, and says whether this request
+ * was the one that did: of several racing requests exactly one gets true.
+ * add_option() can't promise that - it upserts, so two can both succeed.
+ */
+function wpcb_claim_once($name, $value)
+{
+    global $wpdb;
+
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- add_option() upserts, so it can't settle a race.
+    $won = (int) $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, maybe_serialize($value))) === 1;
+
+    // As add_option() does, so get_option() sees the row.
+    $notOptions = wp_cache_get('notoptions', 'options');
+
+    if (is_array($notOptions) && isset($notOptions[$name])) {
+        unset($notOptions[$name]);
+        wp_cache_set('notoptions', $notOptions, 'options');
+    }
+
+    wp_cache_delete($name, 'options');
+
+    return $won;
+}
+
+/**
+ * The job ID in the backup lock, alive or not ('' without a lock) - so a
+ * job can tell whether it still holds the lock before acting on it.
+ */
+function wpcb_backup_lock_owner()
+{
+    $path = wpcb_backup_lock_path();
+
+    return file_exists($path) ? trim((string) file_get_contents($path)) : '';
+}
+
+/**
  * Seconds without progress after which a "running" backup or restore
  * is treated as dead - see wpcb_job_is_alive().
  */

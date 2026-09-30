@@ -235,6 +235,10 @@
     margin-top: 4px;
 }
 
+.wpcb-remote-status + .wpcb-transfer-cancel {
+    margin-top: 4px;
+}
+
 .wpcb-inline-status {
     margin: 8px 0 0;
     color: var(--wpcb-ok);

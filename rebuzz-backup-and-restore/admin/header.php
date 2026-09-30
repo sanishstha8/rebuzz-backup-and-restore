@@ -35,3 +35,5 @@ $wpcbTabs = [
 </nav>
 
 <hr class="wp-header-end">
+
+<?php include WPCB_PATH . 'admin/transfer.php'; ?>

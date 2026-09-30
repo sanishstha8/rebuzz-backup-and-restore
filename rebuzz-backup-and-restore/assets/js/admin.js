@@ -5,6 +5,24 @@ jQuery(function ($) {
     const MAX_STEP_RETRIES = 5;
     const RETRY_DELAY_MS = 3000;
 
+    /** Backups, restores and transfers run from this page, so leaving it asks first. */
+    var busy = {};
+
+    function setBusy(what, on) {
+        if (on) {
+            busy[what] = true;
+        } else {
+            delete busy[what];
+        }
+    }
+
+    window.addEventListener('beforeunload', function (event) {
+        if (Object.keys(busy).length) {
+            event.preventDefault();
+            event.returnValue = '';
+        }
+    });
+
     /** Formats seconds as "1m 20s". */
     function formatDuration(seconds) {
 
@@ -97,6 +115,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('backup', false);
+
                     $('#wpcb-loading').hide();
 
                     $('#wpcb-create-backup').prop('disabled', false);
@@ -118,6 +138,8 @@ jQuery(function ($) {
                     return;
 
                 }
+
+                setBusy('backup', false);
 
                 if (state.status === 'completed') {
 
@@ -173,6 +195,8 @@ jQuery(function ($) {
                     return;
                 }
 
+                setBusy('backup', false);
+
                 $('#wpcb-create-backup').prop('disabled', false);
 
                 $('#wpcb-loading').hide();
@@ -214,6 +238,8 @@ jQuery(function ($) {
 
         $(this).prop('disabled', true);
 
+        setBusy('backup', true);
+
         $.ajax({
 
             url: wpcb.ajax_url,
@@ -233,6 +259,8 @@ jQuery(function ($) {
             success: function (response) {
 
                 if (!response.success) {
+
+                    setBusy('backup', false);
 
                     $('#wpcb-create-backup').prop('disabled', false);
 
@@ -261,6 +289,8 @@ jQuery(function ($) {
             },
 
             error: function () {
+
+                setBusy('backup', false);
 
                 $('#wpcb-create-backup').prop('disabled', false);
 
@@ -338,6 +368,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('restore', false);
+
                     $('#wpcb-restore-loading').hide();
 
                     $('#wpcb-restore-backup').prop('disabled', false);
@@ -357,6 +389,8 @@ jQuery(function ($) {
 
                     return;
                 }
+
+                setBusy('restore', false);
 
                 if (state.status === 'completed') {
 
@@ -411,6 +445,8 @@ jQuery(function ($) {
                     return;
                 }
 
+                setBusy('restore', false);
+
                 $('#wpcb-restore-loading').hide();
 
                 $('#wpcb-restore-backup').prop('disabled', false);
@@ -463,6 +499,8 @@ jQuery(function ($) {
 
         $(this).prop('disabled', true);
 
+        setBusy('restore', true);
+
         $.ajax({
 
             url: wpcb.ajax_url,
@@ -487,6 +525,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('restore', false);
+
                     $('#wpcb-restore-backup').prop('disabled', false);
 
                     $('#wpcb-restore-loading').hide();
@@ -508,6 +548,8 @@ jQuery(function ($) {
             },
 
             error: function () {
+
+                setBusy('restore', false);
 
                 $('#wpcb-restore-backup').prop('disabled', false);
 
@@ -917,9 +959,24 @@ jQuery(function ($) {
 
         var $bar = $box.find('.wpcb-progress-bar');
         var $status = $box.find('.wpcb-remote-status');
+        var $cancel = $box.find('.wpcb-transfer-cancel');
         var retries = 0;
 
-        $box.find('.wpcb-transfer-progress').show();
+        $box.data({ job: jobId, driving: true, cancelling: false }).find('.wpcb-transfer-progress').show();
+        $cancel.prop('disabled', false).show();
+        setBusy('transfer', true);
+
+        function finish(ok) {
+            setBusy('transfer', false);
+            $box.data('driving', false);
+            $cancel.hide();
+            $box.find('.wpcb-transfer-note').hide();
+            // A bar stuck part-way next to "Cancelled" or an error only confuses.
+            if (!ok) {
+                $box.find('.wpcb-transfer-progress').hide();
+            }
+            onDone(ok);
+        }
 
         function step() {
 
@@ -934,21 +991,25 @@ jQuery(function ($) {
 
                     if (!response.success) {
                         $status.addClass('is-error').text(response.data);
-                        onDone(false);
+                        finish(false);
                         return;
                     }
 
                     var state = response.data;
 
                     $bar.css('width', state.progress + '%').text(state.progress + '%');
-                    $status.toggleClass('is-error', state.status === 'failed').text(state.message);
+
+                    // "Stopping..." stays up until the chunk on its way has finished.
+                    if (state.status !== 'running' || !$box.data('cancelling')) {
+                        $status.toggleClass('is-error', state.status === 'failed').text(state.message);
+                    }
 
                     if (state.status === 'running') {
                         setTimeout(step, 200);
                         return;
                     }
 
-                    onDone(state.status === 'completed');
+                    finish(state.status === 'completed');
                 })
                 .fail(function () {
 
@@ -958,11 +1019,69 @@ jQuery(function ($) {
                     }
 
                     $status.addClass('is-error').text(wpcb.i18n.no_server);
-                    onDone(false);
+                    finish(false);
                 });
         }
 
         step();
+    }
+
+    $(document).on('click', '.wpcb-transfer-cancel', function () {
+
+        var $button = $(this);
+        var $box = $button.closest('.wpcb-remote, #wpcb-send-existing, #wpcb-transfer');
+        var $status = $box.find('.wpcb-remote-status');
+
+        if (!$box.data('job') || !window.confirm(wpcb.i18n.cancel_confirm)) {
+            return;
+        }
+
+        $button.prop('disabled', true);
+        $box.data('cancelling', true);
+        $status.removeClass('is-error').text(wpcb.i18n.cancelling);
+
+        $.post(wpcb.ajax_url, { action: 'wpcb_transfer_cancel', nonce: wpcb.nonce, job_id: $box.data('job') }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $box.data('cancelling', false);
+                    $button.prop('disabled', false);
+                    $status.addClass('is-error').text(response.data);
+                    return;
+                }
+
+                // A page driving the transfer sees the end on its next step; another administrator's panel isn't driven.
+                if (!$box.data('driving') && response.data.status !== 'running') {
+                    $button.hide();
+                    $box.find('.wpcb-transfer-note, .wpcb-transfer-progress').hide();
+                    $status.text(response.data.message);
+                }
+            })
+            .fail(function () {
+                $box.data('cancelling', false);
+                $button.prop('disabled', false);
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            });
+    });
+
+    /** A transfer whose page was left or reloaded carries on in the panel at the top of any tab. */
+
+    var $pausedTransfer = $('#wpcb-transfer');
+
+    if ($pausedTransfer.length) {
+
+        $pausedTransfer.data('job', String($pausedTransfer.attr('data-job')));
+
+        if (String($pausedTransfer.attr('data-mine')) === '1') {
+            runTransfer($pausedTransfer.data('job'), $pausedTransfer, function (ok) {
+                // Reloaded so every list shows the backup it brought down or the tag of where it went.
+                if (ok) {
+                    setTimeout(function () {
+                        location.reload();
+                    }, 2000);
+                }
+            });
+        }
     }
 
     function startTransfer(direction, remote, name, $box, onDone) {
@@ -1067,7 +1186,7 @@ jQuery(function ($) {
         var $box = $(this).closest('.wpcb-remote');
         var name = $(this).closest('tr').data('name');
 
-        $box.find('button').prop('disabled', true);
+        $box.find('button').not('.wpcb-transfer-cancel').prop('disabled', true);
 
         startTransfer('down', $box.data('remote'), name, $box, function () {
             $box.find('button').prop('disabled', false);
@@ -1100,7 +1219,7 @@ jQuery(function ($) {
         var $box = $('#wpcb-send-existing');
         var remote = $('#wpcb-send-remote').val();
 
-        $box.find('button, select').prop('disabled', true);
+        $box.find('button, select').not('.wpcb-transfer-cancel').prop('disabled', true);
 
         startTransfer('up', remote, $('#wpcb-send-file').val(), $box, function () {
 

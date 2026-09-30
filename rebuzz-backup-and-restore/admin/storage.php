@@ -18,6 +18,8 @@ $dropboxKey = WPCB_Remote_Dropbox::appKey();
 $history = (new WPCB_History())->get_backups();
 $name = WPCB_Storage::OPTION;
 
+WPCB_Storage::clearStaleParts();
+
 ?>
 
 <div class="wrap wpcb-wrap">
@@ -298,6 +300,8 @@ $name = WPCB_Storage::OPTION;
 
                     <p class="wpcb-loading wpcb-remote-status" aria-live="polite"></p>
 
+                    <button type="button" class="button wpcb-transfer-cancel" style="display:none;"><?php esc_html_e('Cancel', 'rebuzz-backup-and-restore'); ?></button>
+
                 </div>
 
             <?php endforeach; ?>
@@ -333,6 +337,8 @@ $name = WPCB_Storage::OPTION;
                 </div>
 
                 <p class="wpcb-loading wpcb-remote-status" aria-live="polite"></p>
+
+                <button type="button" class="button wpcb-transfer-cancel" style="display:none;"><?php esc_html_e('Cancel', 'rebuzz-backup-and-restore'); ?></button>
 
             </div>
 

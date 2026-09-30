@@ -30,6 +30,9 @@ class WPCB_Storage
     /** Retries of one chunk before a transfer gives up. */
     const MAX_RETRIES = 5;
 
+    /** Seconds untouched after which a half-downloaded .part file is removed (2 hours; its job expires after 1). */
+    const PART_MAX_AGE = 7200;
+
     public function __construct()
     {
         add_action('admin_init', [__CLASS__, 'registerSetting']);
@@ -44,6 +47,7 @@ class WPCB_Storage
             'wpcb_remote_delete'      => 'remoteDelete',
             'wpcb_transfer_start'     => 'transferStart',
             'wpcb_transfer_step'      => 'transferStep',
+            'wpcb_transfer_cancel'    => 'transferCancel',
         ];
 
         foreach ($actions as $action => $method) {
@@ -948,6 +952,8 @@ class WPCB_Storage
             wp_send_json_error(__('A restore is running. Try again when it has finished.', 'rebuzz-backup-and-restore'));
         }
 
+        self::clearStaleParts();
+
         if ($direction === 'up') {
 
             if (!is_file($local)) {
@@ -993,7 +999,9 @@ class WPCB_Storage
         $job = new WPCB_Job();
 
         if (!wpcb_backup_lock_acquire($job->id())) {
-            wp_send_json_error(__('A backup or another transfer is running. Try again when it has finished.', 'rebuzz-backup-and-restore'));
+            wp_send_json_error(self::runningTransfer()
+                ? __('Another transfer is still going. Wait for it to finish, or reload this page to see it at the top, where you can cancel it.', 'rebuzz-backup-and-restore')
+                : __('A backup is running. Try again when it has finished.', 'rebuzz-backup-and-restore'));
         }
 
         $job->update([
@@ -1034,8 +1042,42 @@ class WPCB_Storage
             wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
         }
 
-        if (($state['status'] ?? '') !== 'running' || $job->isProcessing()) {
+        // Another step, or a cancel, is at work on it: report where it stands.
+        if (($state['status'] ?? '') !== 'running' || !wpcb_lock('transfer_' . $jobId)) {
             wp_send_json_success($job->getPublic());
+        }
+
+        // As the request that held the lock last left it.
+        $job = new WPCB_Job($jobId);
+
+        self::stepLocked($job);
+
+        wpcb_unlock('transfer_' . $jobId);
+
+        wp_send_json_success($job->getPublic());
+    }
+
+    /** One step of a transfer, by the request holding its lock. */
+    private static function stepLocked(WPCB_Job $job)
+    {
+        $jobId = $job->id();
+
+        if (($job->get()['status'] ?? '') !== 'running') {
+            return;
+        }
+
+        if (self::cancelRequested($jobId)) {
+            self::finishCancel($job);
+            return;
+        }
+
+        // Paused (its page was left) for long enough that a backup has taken the lock since. No lock at all: take it back.
+        $owner = wpcb_backup_lock_owner();
+
+        if ($owner !== $jobId && !($owner === '' && wpcb_backup_lock_acquire($jobId))) {
+            self::discardTransfer($job);
+            self::endTransfer($job, false, __('This transfer stopped because a backup started while it was paused. Start it again from the Storage tab.', 'rebuzz-backup-and-restore'));
+            return;
         }
 
         $job->markProcessing();
@@ -1048,7 +1090,151 @@ class WPCB_Storage
 
         $job->clearProcessing();
 
+        // Cancelled while that chunk was on its way.
+        if (self::cancelRequested($jobId) && ($job->get()['status'] ?? '') === 'running') {
+            self::finishCancel($job);
+        }
+    }
+
+    /**
+     * Cancels a Storage-tab transfer. Any administrator may, so one left
+     * running by someone who has gone away can be stopped.
+     */
+    public function transferCancel()
+    {
+        self::check();
+
+        $jobId = sanitize_text_field(wp_unslash($_POST['job_id'] ?? ''));
+
+        if (!WPCB_Job::exists($jobId)) {
+            wp_send_json_error(__('That transfer has ended.', 'rebuzz-backup-and-restore'));
+        }
+
+        $job = new WPCB_Job($jobId);
+        $state = $job->get();
+
+        if (($state['kind'] ?? '') !== 'transfer') {
+            wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
+        }
+
+        if (($state['status'] ?? '') !== 'running') {
+            wp_send_json_success($job->getPublic());
+        }
+
+        set_transient(self::cancelKey($jobId), 1, HOUR_IN_SECONDS);
+
+        // A step on its way holds the lock; it stops the transfer itself once its chunk is done.
+        if (!wpcb_lock('transfer_' . $jobId)) {
+            wp_send_json_success(array_merge($job->getPublic(), ['message' => __('Stopping...', 'rebuzz-backup-and-restore')]));
+        }
+
+        $job = new WPCB_Job($jobId);
+
+        if (($job->get()['status'] ?? '') === 'running') {
+            self::finishCancel($job);
+        }
+
+        wpcb_unlock('transfer_' . $jobId);
+
         wp_send_json_success($job->getPublic());
+    }
+
+    /**
+     * The Storage-tab transfer that holds the backup lock and is still
+     * marked running: going, or paused because its page was left - it
+     * carries on from where it stopped as long as nothing else has taken
+     * the lock since. A cancel left pending by a closed page is finished
+     * here.
+     *
+     * @return WPCB_Job|null
+     */
+    public static function runningTransfer()
+    {
+        $jobId = wpcb_backup_lock_owner();
+
+        if (!WPCB_Job::exists($jobId)) {
+            return null;
+        }
+
+        $job = new WPCB_Job($jobId);
+        $state = $job->get();
+
+        if (($state['kind'] ?? '') !== 'transfer' || ($state['status'] ?? '') !== 'running') {
+            return null;
+        }
+
+        // A cancel that no step has finished (its page was closed). A step holding the lock would finish it itself.
+        if (self::cancelRequested($jobId) && wpcb_lock('transfer_' . $jobId)) {
+
+            $job = new WPCB_Job($jobId);
+
+            if (($job->get()['status'] ?? '') === 'running') {
+                self::finishCancel($job);
+            }
+
+            wpcb_unlock('transfer_' . $jobId);
+
+            return null;
+        }
+
+        return $job;
+    }
+
+    /** Removes half-downloaded files that no transfer has touched for PART_MAX_AGE - left by one that was never resumed. */
+    public static function clearStaleParts()
+    {
+        $running = self::runningTransfer();
+        $current = $running ? ($running->get()['transfer']['name'] ?? '') . '.part' : '';
+
+        foreach (glob(wpcb_backups_dir() . '/*.zip.part') ?: [] as $part) {
+            if (basename($part) !== $current && time() - (int) @filemtime($part) > self::PART_MAX_AGE) {
+                wp_delete_file($part);
+            }
+        }
+    }
+
+    private static function cancelKey($jobId)
+    {
+        return 'wpcb_transfer_cancel_' . md5($jobId);
+    }
+
+    private static function cancelRequested($jobId)
+    {
+        return (bool) get_transient(self::cancelKey($jobId));
+    }
+
+    private static function finishCancel(WPCB_Job $job)
+    {
+        delete_transient(self::cancelKey($job->id()));
+        self::discardTransfer($job);
+        self::endTransfer($job, false, __('Cancelled. The part already transferred was removed.', 'rebuzz-backup-and-restore'), 'cancelled');
+    }
+
+    /** Removes what an unfinished transfer left: a download's .part file, or a send's unfinished S3 upload (Dropbox drops its own). */
+    private static function discardTransfer(WPCB_Job $job)
+    {
+        $t = $job->get()['transfer'] ?? [];
+
+        if (empty($t['name'])) {
+            return;
+        }
+
+        if (($t['direction'] ?? '') === 'up') {
+
+            $remote = self::remote($t['remote'] ?? '');
+
+            if ($remote !== null) {
+                $remote->abortUpload((array) ($t['session'] ?? []), $t['name']);
+            }
+
+            return;
+        }
+
+        $part = wpcb_backups_dir() . '/' . $t['name'] . '.part';
+
+        if (file_exists($part)) {
+            wp_delete_file($part);
+        }
     }
 
     /** One chunk of a Storage-tab transfer. */
@@ -1137,14 +1323,19 @@ class WPCB_Storage
         return self::endTransfer($job, true, __('Downloaded. It is now in your backups list; restore it from the Restore tab.', 'rebuzz-backup-and-restore'));
     }
 
-    private static function endTransfer(WPCB_Job $job, $ok, $message)
+    private static function endTransfer(WPCB_Job $job, $ok, $message, $status = null)
     {
-        wpcb_backup_lock_release();
+        $status = $status ?? ($ok ? 'completed' : 'failed');
 
-        (new WPCB_Logger('backup'))->log(($ok ? 'Transfer finished: ' : 'Transfer failed: ') . $message);
+        // Only its own lock: a transfer paused long enough may have lost it to a backup.
+        if (wpcb_backup_lock_owner() === $job->id()) {
+            wpcb_backup_lock_release();
+        }
+
+        (new WPCB_Logger('backup'))->log('Transfer ' . $status . ': ' . $message);
 
         $job->update([
-            'status'   => $ok ? 'completed' : 'failed',
+            'status'   => $status,
             'progress' => $ok ? 100 : (int) ($job->get()['progress'] ?? 0),
             'message'  => $message,
         ]);

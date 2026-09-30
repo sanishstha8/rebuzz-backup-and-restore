@@ -61,6 +61,7 @@ if (!defined('ABSPATH')) {
         'wpcb_remote_delete',
         'wpcb_transfer_start',
         'wpcb_transfer_step',
+        'wpcb_transfer_cancel',
     ];
 
     if (!in_array($action, $ours, true)) {

@@ -137,6 +137,8 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 * Added: new backups are sent automatically - scheduled ones only, or every backup - in 8 MB pieces across many short requests, so large backups fit shared-hosting limits. A failed upload is retried, then reported as a warning; the backup itself is never lost.
 * Added: keep the last 1 to 100 backups in each place. Only backups this site uploaded automatically are deleted; other files in the bucket or folder, and backups you send by hand, are never touched.
 * Added: Backups in the cloud - list them, download one back to the server to restore it (onto the same site or a new one), or delete one. Send a backup you already have from the same tab.
+* Added: a download or send that stops because its page was reloaded or left carries on from where it stopped, at the top of whichever ReBuzz Backup tab opens next. Cancel stops one at any time and removes the part already transferred, including an unfinished S3 upload.
+* Added: leaving or reloading the page while a backup, restore or transfer is running from it asks first.
 * Added: an option to remove the copy on the server once a backup has reached every place chosen; if any upload fails, the local copy is kept.
 * Added: S3 and Dropbox tags on the Backups tab, and upload results in the finished-backup message and the email.
 * Security: the S3 secret and the Dropbox tokens are stored encrypted with a key derived from wp-config.php's secret keys, so backups - which contain the database - only hold the encrypted form.
