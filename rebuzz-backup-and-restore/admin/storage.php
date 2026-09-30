@@ -30,7 +30,7 @@ $name = WPCB_Storage::OPTION;
 
         <?php settings_fields('wpcb_storage_group'); ?>
 
-        <div class="wpcb-grid wpcb-grid-2">
+        <div class="wpcb-grid wpcb-grid-2 wpcb-grid-top">
 
             <div class="wpcb-card">
 

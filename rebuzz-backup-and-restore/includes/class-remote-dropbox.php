@@ -241,6 +241,15 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
             }
         }
 
+        // A permission not ticked in the Dropbox app's settings; tokens from before it was ticked lack it too.
+        if ($text === '' && strpos($summary, 'missing_scope') !== false) {
+            $scope = is_array($json) ? (string) ($json['error']['required_scope'] ?? '') : '';
+            $text = $scope !== ''
+                /* translators: %s: Dropbox permission name, e.g. "files.content.write" */
+                ? sprintf(__('the plugin\'s Dropbox app is missing the %s permission. Once it is ticked on the app\'s Permissions tab, click Disconnect and connect Dropbox again.', 'rebuzz-backup-and-restore'), $scope)
+                : __('the plugin\'s Dropbox app is missing a permission. Once it is ticked on the app\'s Permissions tab, click Disconnect and connect Dropbox again.', 'rebuzz-backup-and-restore');
+        }
+
         if ($text === '') {
             $text = $summary !== ''
                 ? $summary

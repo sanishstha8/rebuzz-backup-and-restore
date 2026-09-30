@@ -90,6 +90,11 @@
     margin: 0;
 }
 
+/* Cards of very different lengths: each only as tall as its content, not a mostly empty box. */
+.wpcb-grid-top {
+    align-items: start;
+}
+
 /* Summary tiles */
 
 .wpcb-stat-label {

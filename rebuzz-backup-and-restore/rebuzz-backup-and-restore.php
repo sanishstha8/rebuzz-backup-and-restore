@@ -191,9 +191,9 @@ define('WPCB_VERSION', '1.8.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 
-// The plugin's Dropbox app (App folder access). wp-config.php can set its own.
+// The plugin's Dropbox app (App folder access, PKCE, so the key isn't a secret). wp-config.php can set its own.
 if (!defined('WPCB_DROPBOX_APP_KEY')) {
-    define('WPCB_DROPBOX_APP_KEY', '');
+    define('WPCB_DROPBOX_APP_KEY', 'x9at2vr25yrdrli');
 }
 
 require_once WPCB_PATH . 'includes/class-activator.php';
