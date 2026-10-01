@@ -94,7 +94,7 @@ Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalO
 
 = Are my storage keys safe? =
 
-The S3 secret key and the Dropbox access are stored encrypted, with a key made from the secret keys in your `wp-config.php`. Backups include your database but never `wp-config.php`, so a backup only ever carries the encrypted form. The form never shows a saved secret again. After moving the site to a server with different secret keys, enter the secret again or reconnect Dropbox.
+The S3 secret key and the Dropbox access are stored encrypted, with a key made from the secret keys in your `wp-config.php`. Backups include your database but never `wp-config.php`, so a backup only ever carries the encrypted form. The form never shows a saved secret again. After moving the site to a server with different secret keys, enter the secret again or reconnect Dropbox. Restoring a backup onto a site that already has cloud storage set up keeps that site's own connection.
 
 = My server died. How do I restore from the cloud? =
 
@@ -142,6 +142,7 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 * Added: an option to remove the copy on the server once a backup has reached every place chosen; if any upload fails, the local copy is kept.
 * Added: S3 and Dropbox tags on the Backups tab, and upload results in the finished-backup message and the email.
 * Security: the S3 secret and the Dropbox tokens are stored encrypted with a key derived from wp-config.php's secret keys, so backups - which contain the database - only hold the encrypted form.
+* Changed: a restore keeps the site's cloud connection when one is set up, instead of bringing back the backup's, and keeps track of backups uploaded after the restored backup was made, so keep-the-last-N still deletes them in time.
 
 = 1.7.0 =
 * Added: scheduled backups, daily or weekly at an hour in your site's timezone, on a new Schedule tab. They run in the background with no browser open: the site requests each step itself, taking the same small steps as a manual backup, and WP-Cron carries the backup on if those requests are blocked. The chosen hour holds across daylight-saving changes.

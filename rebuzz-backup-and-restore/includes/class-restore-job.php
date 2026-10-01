@@ -1650,41 +1650,117 @@ class WPCB_Restore_Job
         ));
     }
 
-    /** The schedule's list of the backups it made, as it is now; absent is left out. */
+    /** Lists of backup files this site made, per option; flat or per destination. */
+    private static function trackingOptions()
+    {
+        return [
+            WPCB_Scheduler::LIST_OPTION => false,
+            WPCB_Storage::UPLOADED      => true,
+            WPCB_Storage::SENT          => true,
+        ];
+    }
+
+    /** The cloud connection; the secrets are encrypted with this server's keys. */
+    private static function cloudOptions()
+    {
+        return [WPCB_Storage::OPTION, WPCB_Storage::SECRETS, WPCB_Storage::DROPBOX];
+    }
+
+    /** This plugin's options as they are now; absent ones are left out. */
     private function capturePluginOptions()
     {
-        $list = get_option(WPCB_Scheduler::LIST_OPTION, null);
+        $captured = [];
 
-        return $list === null ? [] : [WPCB_Scheduler::LIST_OPTION => $list];
+        foreach (array_merge(array_keys(self::trackingOptions()), self::cloudOptions()) as $option) {
+
+            $value = get_option($option, null);
+
+            if ($value !== null) {
+                $captured[$option] = $value;
+            }
+        }
+
+        return $captured;
     }
 
     /**
-     * Merges the schedule's list back after the DB import replaced it.
-     * The backup's copy predates the backups made since (the one being
-     * restored often included), and without them keep-the-last-N never
-     * deletes those. Names of files already gone are harmless; the next
-     * keep-the-last-N drops them.
+     * Undoes what the DB import did to this plugin's own options.
+     *
+     * The tracking lists are merged, not replaced: the backup's copy
+     * predates the backups made since (the one being restored often
+     * included), and without them keep-the-last-N never deletes those,
+     * locally or in the cloud. Names of files already gone are harmless;
+     * the next keep-the-last-N drops them.
+     *
+     * A cloud connection set up here is kept as it is: the backup's
+     * secrets only decrypt with the keys of the server that saved them.
+     * A site without one takes the backup's, as before.
      */
     private function restorePreservedPluginOptions()
     {
-        $captured = $this->job->get()['preserve_plugin_options'][WPCB_Scheduler::LIST_OPTION] ?? null;
+        $captured = $this->job->get()['preserve_plugin_options'] ?? null;
 
         if (!is_array($captured)) {
             return;
         }
 
-        $restored = get_option(WPCB_Scheduler::LIST_OPTION, []);
-        $restored = is_array($restored) ? $restored : [];
+        $kept = [];
 
-        $merged = self::unionNames($restored, $captured);
+        foreach (self::trackingOptions() as $option => $perDestination) {
 
-        if ($merged === $restored) {
+            if (!isset($captured[$option]) || !is_array($captured[$option])) {
+                continue;
+            }
+
+            $restored = get_option($option, []);
+            $restored = is_array($restored) ? $restored : [];
+
+            if ($perDestination) {
+
+                $merged = $restored;
+
+                foreach ($captured[$option] as $id => $names) {
+                    $merged[$id] = self::unionNames($restored[$id] ?? [], $names);
+                }
+
+            } else {
+                $merged = self::unionNames($restored, $captured[$option]);
+            }
+
+            if ($merged !== $restored) {
+                update_option($option, $merged, false);
+                $kept[] = $option;
+            }
+        }
+
+        if (array_intersect_key($captured, array_flip(self::cloudOptions()))) {
+
+            foreach (self::cloudOptions() as $option) {
+
+                $restored = get_option($option, null);
+
+                if (!array_key_exists($option, $captured)) {
+
+                    if ($restored !== null) {
+                        delete_option($option);
+                        $kept[] = $option;
+                    }
+
+                } elseif ($restored !== $captured[$option]) {
+                    update_option($option, $captured[$option], false);
+                    $kept[] = $option;
+                }
+            }
+        }
+
+        if (empty($kept)) {
             return;
         }
 
-        update_option(WPCB_Scheduler::LIST_OPTION, $merged, false);
-
-        $this->logger->log("Kept this site's list of scheduled backups after the database import replaced it.");
+        $this->logger->log(sprintf(
+            "Kept this site's own backup lists and cloud connection after the database import replaced them (%s).",
+            implode(', ', $kept)
+        ));
     }
 
     private static function unionNames($restored, $current)
