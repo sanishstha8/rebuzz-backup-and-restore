@@ -701,6 +701,9 @@ class WPCB_Restore_Job
 
         if (empty($state['db_swapped'])) {
 
+            // Read now, in this request: the swap below replaces them with the backup's.
+            $this->job->update(['preserve_plugin_options' => $this->capturePluginOptions()]);
+
             $core = new WPCB_Core_Swap($workspace);
             $withCore = !empty($state['core_staged']);
 
@@ -753,6 +756,7 @@ class WPCB_Restore_Job
         // Once, right after the swap - see this method's docblock.
         $this->restorePreservedSiteUrl();
         $this->restorePreservedAdminIdentity();
+        $this->restorePreservedPluginOptions();
         $this->refreshAdminSession();
         $this->isolateActivePlugins();
 
@@ -1644,6 +1648,51 @@ class WPCB_Restore_Job
             "Preserved this site's admin login credentials after the database import changed them (fields restored: %s).",
             implode(', ', array_keys($changes))
         ));
+    }
+
+    /** The schedule's list of the backups it made, as it is now; absent is left out. */
+    private function capturePluginOptions()
+    {
+        $list = get_option(WPCB_Scheduler::LIST_OPTION, null);
+
+        return $list === null ? [] : [WPCB_Scheduler::LIST_OPTION => $list];
+    }
+
+    /**
+     * Merges the schedule's list back after the DB import replaced it.
+     * The backup's copy predates the backups made since (the one being
+     * restored often included), and without them keep-the-last-N never
+     * deletes those. Names of files already gone are harmless; the next
+     * keep-the-last-N drops them.
+     */
+    private function restorePreservedPluginOptions()
+    {
+        $captured = $this->job->get()['preserve_plugin_options'][WPCB_Scheduler::LIST_OPTION] ?? null;
+
+        if (!is_array($captured)) {
+            return;
+        }
+
+        $restored = get_option(WPCB_Scheduler::LIST_OPTION, []);
+        $restored = is_array($restored) ? $restored : [];
+
+        $merged = self::unionNames($restored, $captured);
+
+        if ($merged === $restored) {
+            return;
+        }
+
+        update_option(WPCB_Scheduler::LIST_OPTION, $merged, false);
+
+        $this->logger->log("Kept this site's list of scheduled backups after the database import replaced it.");
+    }
+
+    private static function unionNames($restored, $current)
+    {
+        return array_values(array_unique(array_merge(
+            is_array($restored) ? $restored : [],
+            is_array($current) ? $current : []
+        )));
     }
 
     /**
@@ -2750,6 +2799,7 @@ class WPCB_Restore_Job
         // here too so a failed restore never strands the site there.
         $this->restorePreservedSiteUrl();
         $this->restorePreservedAdminIdentity();
+        $this->restorePreservedPluginOptions();
 
         // Same reasoning: undo any plugin/mu-plugin isolation now,
         // don't leave the site stuck that way on failure.

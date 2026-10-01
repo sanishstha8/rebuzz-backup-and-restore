@@ -134,6 +134,7 @@ class WPCB_Job
         unset(
             $data['preserve_admin_pass'],
             $data['preserve_admin_login'],
+            $data['preserve_plugin_options'],
             $data['zip'],
             $data['workspace'],
             $data['token']

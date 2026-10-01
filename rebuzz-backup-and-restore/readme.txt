@@ -105,6 +105,7 @@ Use **Send test email** on the Schedule tab. If that email doesn't arrive either
 * Added: Run scheduled backup now, a Next backup card on the Backups tab, a Scheduled tag on backups the schedule made, and live progress of a background backup on both tabs.
 * Added: a scheduled backup that makes no progress for ten minutes is marked failed and reported, and releases its lock, instead of blocking later backups.
 * Changed: a scheduled backup never starts while a restore or another backup is running; it is skipped and reported instead.
+* Changed: a restore keeps the schedule's record of the backups it made, so keep-the-last-N still deletes backups made after the restored one.
 
 = 1.6.0 =
 * Changed: the plugin's screens are now tabs - Backups, Restore and Settings - under a single ReBuzz Backup menu item, laid out in cards. The Backups tab opens with when the last backup ran, how much space backups use and whether the backup folder is private. Links to the old Restore and Settings pages still work.
