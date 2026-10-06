@@ -19,16 +19,25 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 = What it does =
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
+
 * **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
+
 * **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others) or to Dropbox, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
+
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
+
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
+
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
+
 * **Archives are not left guessable.** A backup is a complete copy of your site, database included, so every archive filename ends in 32 random characters - the file can't be downloaded without knowing that name. Web-server rules that deny direct access are written alongside them for Apache and IIS.
+
 * **Multisite aware.** A network administrator can back up the network; an individual site admin gets their own site and nothing else. The restore side enforces the same boundary, so nobody can drop another site's data onto theirs.
 * Free disk space and directory permissions are checked before a restore begins, so it fails early and safely rather than halfway through.
+
 * Leftover storage from All-in-One WP Migration and UpdraftPlus is detected, and you can clear it from the Backups tab.
 * After a restore, you're reminded to open Permalink Settings once, which rebuilds the link rules your plugins add so none of their pages show "Page not found".
+
 
 == Installation ==
 
