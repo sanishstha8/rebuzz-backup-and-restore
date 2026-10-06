@@ -8,14 +8,13 @@ Complete WordPress Backup & Restore Solution.
 ## Layout
 
 | Path | What it is |
-| --- | --- |
 | `rebuzz-backup-and-restore/` | Plugin source. This folder is what ships. |
 | `_dev-tools/wpcb-diagnose.php` | Standalone restore diagnostic. Not shipped. |
 
 ## Branches
 
-- `main` — released versions, updated by merging pull requests from `restore-diagnostics`.
-- `restore-diagnostics` — development. The current version is the `Stable tag` in
+- `main`- released versions, updated by merging pull requests from `restore-diagnostics`.
+- `restore-diagnostics` - development. The current version is the `Stable tag` in
   `rebuzz-backup-and-restore/readme.txt`.
 
 ## Releases
