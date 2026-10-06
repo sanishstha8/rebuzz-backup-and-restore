@@ -5,6 +5,24 @@ jQuery(function ($) {
     const MAX_STEP_RETRIES = 5;
     const RETRY_DELAY_MS = 3000;
 
+    /** Backups, restores and transfers run from this page, so leaving it asks first. */
+    var busy = {};
+
+    function setBusy(what, on) {
+        if (on) {
+            busy[what] = true;
+        } else {
+            delete busy[what];
+        }
+    }
+
+    window.addEventListener('beforeunload', function (event) {
+        if (Object.keys(busy).length) {
+            event.preventDefault();
+            event.returnValue = '';
+        }
+    });
+
     /** Formats seconds as "1m 20s". */
     function formatDuration(seconds) {
 
@@ -97,6 +115,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('backup', false);
+
                     $('#wpcb-loading').hide();
 
                     $('#wpcb-create-backup').prop('disabled', false);
@@ -119,6 +139,8 @@ jQuery(function ($) {
 
                 }
 
+                setBusy('backup', false);
+
                 if (state.status === 'completed') {
 
                     $('#wpcb-create-backup').prop('disabled', false);
@@ -130,7 +152,7 @@ jQuery(function ($) {
                     // files skipped (state.files_failed), and that
                     // needs to actually reach the screen instead of
                     // always showing a plain success message.
-                    var noticeClass = state.files_failed
+                    var noticeClass = (state.files_failed || state.upload_failed)
                         ? 'notice-warning'
                         : 'notice-success';
 
@@ -173,6 +195,8 @@ jQuery(function ($) {
                     return;
                 }
 
+                setBusy('backup', false);
+
                 $('#wpcb-create-backup').prop('disabled', false);
 
                 $('#wpcb-loading').hide();
@@ -214,6 +238,8 @@ jQuery(function ($) {
 
         $(this).prop('disabled', true);
 
+        setBusy('backup', true);
+
         $.ajax({
 
             url: wpcb.ajax_url,
@@ -233,6 +259,8 @@ jQuery(function ($) {
             success: function (response) {
 
                 if (!response.success) {
+
+                    setBusy('backup', false);
 
                     $('#wpcb-create-backup').prop('disabled', false);
 
@@ -261,6 +289,8 @@ jQuery(function ($) {
             },
 
             error: function () {
+
+                setBusy('backup', false);
 
                 $('#wpcb-create-backup').prop('disabled', false);
 
@@ -338,6 +368,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('restore', false);
+
                     $('#wpcb-restore-loading').hide();
 
                     $('#wpcb-restore-backup').prop('disabled', false);
@@ -357,6 +389,8 @@ jQuery(function ($) {
 
                     return;
                 }
+
+                setBusy('restore', false);
 
                 if (state.status === 'completed') {
 
@@ -411,6 +445,8 @@ jQuery(function ($) {
                     return;
                 }
 
+                setBusy('restore', false);
+
                 $('#wpcb-restore-loading').hide();
 
                 $('#wpcb-restore-backup').prop('disabled', false);
@@ -463,6 +499,8 @@ jQuery(function ($) {
 
         $(this).prop('disabled', true);
 
+        setBusy('restore', true);
+
         $.ajax({
 
             url: wpcb.ajax_url,
@@ -487,6 +525,8 @@ jQuery(function ($) {
 
                 if (!response.success) {
 
+                    setBusy('restore', false);
+
                     $('#wpcb-restore-backup').prop('disabled', false);
 
                     $('#wpcb-restore-loading').hide();
@@ -508,6 +548,8 @@ jQuery(function ($) {
             },
 
             error: function () {
+
+                setBusy('restore', false);
 
                 $('#wpcb-restore-backup').prop('disabled', false);
 
@@ -780,6 +822,416 @@ jQuery(function ($) {
                 $button.prop('disabled', false);
                 $status.addClass('is-error').text(wpcb.i18n.no_server);
             });
+    });
+
+    /** Storage tab: S3 fields that apply to the chosen service. */
+
+    function toggleS3Rows() {
+
+        var provider = $('#wpcb-s3-provider').val();
+        var needsEndpoint = provider === 'r2' || provider === 'other';
+
+        $('.wpcb-s3-region-row').toggle(provider !== 'r2');
+        $('.wpcb-s3-endpoint-row').toggle(needsEndpoint);
+        $('.wpcb-s3-path-row').toggle(provider === 'other');
+        $('.wpcb-s3-r2-note').toggle(provider === 'r2');
+        $('.wpcb-s3-other-note').toggle(provider === 'other');
+        $('.wpcb-s3-b2-note').toggle(provider === 'b2');
+        $('#wpcb-s3-region').attr('placeholder', $('#wpcb-s3-provider option:selected').data('region') || '');
+    }
+
+    if ($('#wpcb-s3-provider').length) {
+        toggleS3Rows();
+        $('#wpcb-s3-provider').on('change', toggleS3Rows);
+    }
+
+    /** Runs a Storage-tab action and shows its answer next to the button. */
+    function storageAction($button, $status, data, onSuccess, onFail) {
+
+        $button.prop('disabled', true);
+        $status.removeClass('is-error').text(wpcb.i18n.working);
+
+        $.post(wpcb.ajax_url, $.extend({ nonce: wpcb.nonce }, data), null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+
+                    if (onFail) {
+                        onFail();
+                    }
+
+                    return;
+                }
+
+                $status.text(typeof response.data === 'string' ? response.data : '');
+
+                if (onSuccess) {
+                    onSuccess(response.data);
+                }
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+
+                if (onFail) {
+                    onFail();
+                }
+            })
+            .always(function () {
+                $button.prop('disabled', false);
+            });
+    }
+
+    $('#wpcb-s3-test').on('click', function () {
+
+        var data = { action: 'wpcb_s3_test' };
+
+        // The fields as typed, saved or not.
+        $('[name^="wpcb_storage[s3]"]').each(function () {
+
+            var key = this.name.replace('wpcb_storage[s3]', 's3');
+
+            if (this.type === 'checkbox') {
+                data[key] = this.checked ? 1 : 0;
+            } else {
+                data[key] = $(this).val();
+            }
+        });
+
+        storageAction($(this), $('#wpcb-s3-status'), data);
+    });
+
+    /** Dropbox: open the consent page, then trade the pasted code for access. */
+
+    $('#wpcb-dropbox-start').on('click', function () {
+
+        // Opened now, while the click still counts, or pop-up blockers stop it.
+        var win = window.open('', '_blank');
+
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_start' }, function (data) {
+
+            if (win) {
+                win.location = data.url;
+            } else {
+                $('#wpcb-dropbox-link').show().empty().append(
+                    $('<a target="_blank" rel="noopener"></a>').attr('href', data.url).text(wpcb.i18n.open_dropbox)
+                );
+            }
+
+            $('#wpcb-dropbox-code').trigger('focus');
+        }, function () {
+            if (win) {
+                win.close();
+            }
+        });
+    });
+
+    $('#wpcb-dropbox-finish').on('click', function () {
+
+        storageAction($(this), $('#wpcb-dropbox-status'), {
+            action: 'wpcb_dropbox_finish',
+            code: $('#wpcb-dropbox-code').val()
+        }, function () {
+            setTimeout(function () {
+                location.reload();
+            }, 800);
+        });
+    });
+
+    $('#wpcb-dropbox-test').on('click', function () {
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_test' });
+    });
+
+    $('#wpcb-dropbox-disconnect').on('click', function () {
+
+        if (!window.confirm(wpcb.i18n.disconnect_confirm)) {
+            return;
+        }
+
+        storageAction($(this), $('#wpcb-dropbox-status'), { action: 'wpcb_dropbox_disconnect' }, function () {
+            location.reload();
+        });
+    });
+
+    /** Drives a Storage-tab transfer one chunk per request, like a manual backup. */
+
+    function runTransfer(jobId, $box, onDone) {
+
+        var $bar = $box.find('.wpcb-progress-bar');
+        var $status = $box.find('.wpcb-remote-status');
+        var $cancel = $box.find('.wpcb-transfer-cancel');
+        var retries = 0;
+
+        $box.data({ job: jobId, driving: true, cancelling: false }).find('.wpcb-transfer-progress').show();
+        $cancel.prop('disabled', false).show();
+        setBusy('transfer', true);
+
+        function finish(ok) {
+            setBusy('transfer', false);
+            $box.data('driving', false);
+            $cancel.hide();
+            $box.find('.wpcb-transfer-note').hide();
+            // A bar stuck part-way next to "Cancelled" or an error only confuses.
+            if (!ok) {
+                $box.find('.wpcb-transfer-progress').hide();
+            }
+            onDone(ok);
+        }
+
+        function step() {
+
+            $.post(wpcb.ajax_url, {
+                action: 'wpcb_transfer_step',
+                nonce: wpcb.nonce,
+                job_id: jobId
+            }, null, 'json')
+                .done(function (response) {
+
+                    retries = 0;
+
+                    if (!response.success) {
+                        $status.addClass('is-error').text(response.data);
+                        finish(false);
+                        return;
+                    }
+
+                    var state = response.data;
+
+                    $bar.css('width', state.progress + '%').text(state.progress + '%');
+
+                    // "Stopping..." stays up until the chunk on its way has finished.
+                    if (state.status !== 'running' || !$box.data('cancelling')) {
+                        $status.toggleClass('is-error', state.status === 'failed').text(state.message);
+                    }
+
+                    if (state.status === 'running') {
+                        setTimeout(step, 200);
+                        return;
+                    }
+
+                    finish(state.status === 'completed');
+                })
+                .fail(function () {
+
+                    if (retries++ < 5) {
+                        setTimeout(step, 3000);
+                        return;
+                    }
+
+                    $status.addClass('is-error').text(wpcb.i18n.no_server);
+                    finish(false);
+                });
+        }
+
+        step();
+    }
+
+    $(document).on('click', '.wpcb-transfer-cancel', function () {
+
+        var $button = $(this);
+        var $box = $button.closest('.wpcb-remote, #wpcb-send-existing, #wpcb-transfer');
+        var $status = $box.find('.wpcb-remote-status');
+
+        if (!$box.data('job') || !window.confirm(wpcb.i18n.cancel_confirm)) {
+            return;
+        }
+
+        $button.prop('disabled', true);
+        $box.data('cancelling', true);
+        $status.removeClass('is-error').text(wpcb.i18n.cancelling);
+
+        $.post(wpcb.ajax_url, { action: 'wpcb_transfer_cancel', nonce: wpcb.nonce, job_id: $box.data('job') }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $box.data('cancelling', false);
+                    $button.prop('disabled', false);
+                    $status.addClass('is-error').text(response.data);
+                    return;
+                }
+
+                // A page driving the transfer sees the end on its next step; another administrator's panel isn't driven.
+                if (!$box.data('driving') && response.data.status !== 'running') {
+                    $button.hide();
+                    $box.find('.wpcb-transfer-note, .wpcb-transfer-progress').hide();
+                    $status.text(response.data.message);
+                }
+            })
+            .fail(function () {
+                $box.data('cancelling', false);
+                $button.prop('disabled', false);
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            });
+    });
+
+    /** A transfer whose page was left or reloaded carries on in the panel at the top of any tab. */
+
+    var $pausedTransfer = $('#wpcb-transfer');
+
+    if ($pausedTransfer.length) {
+
+        $pausedTransfer.data('job', String($pausedTransfer.attr('data-job')));
+
+        if (String($pausedTransfer.attr('data-mine')) === '1') {
+            runTransfer($pausedTransfer.data('job'), $pausedTransfer, function (ok) {
+                // Reloaded so every list shows the backup it brought down or the tag of where it went.
+                if (ok) {
+                    setTimeout(function () {
+                        location.reload();
+                    }, 2000);
+                }
+            });
+        }
+    }
+
+    function startTransfer(direction, remote, name, $box, onDone) {
+
+        var $status = $box.find('.wpcb-remote-status');
+
+        $status.removeClass('is-error').text(wpcb.i18n.starting);
+        $box.find('.wpcb-progress-bar').css('width', '0%').text('0%');
+
+        $.post(wpcb.ajax_url, {
+            action: 'wpcb_transfer_start',
+            nonce: wpcb.nonce,
+            direction: direction,
+            remote: remote,
+            name: name
+        }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+                    onDone(false);
+                    return;
+                }
+
+                runTransfer(response.data.job_id, $box, onDone);
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+                onDone(false);
+            });
+    }
+
+    /** Backups in one cloud destination, with Download and Delete. */
+
+    // keepStatus: a refresh after a transfer, whose result message should stay on screen.
+    function loadRemote($box, keepStatus) {
+
+        var remote = $box.data('remote');
+        var $body = $box.find('.wpcb-remote-body');
+        var $status = $box.find('.wpcb-remote-status');
+
+        if (!keepStatus) {
+            $status.removeClass('is-error').text(wpcb.i18n.working);
+        }
+
+        $.post(wpcb.ajax_url, { action: 'wpcb_remote_list', nonce: wpcb.nonce, remote: remote }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $status.addClass('is-error').text(response.data);
+                    return;
+                }
+
+                if (!keepStatus) {
+                    $status.text('');
+                }
+
+                $body.empty();
+
+                if (!response.data.length) {
+                    $body.append($('<p class="wpcb-empty"></p>').text(wpcb.i18n.cloud_empty));
+                    return;
+                }
+
+                var $tbody = $('<tbody></tbody>');
+
+                $.each(response.data, function (i, item) {
+
+                    var $name = $('<td></td>')
+                        .append($('<span class="wpcb-backup-date"></span>').text(item.date))
+                        .append($('<span class="wpcb-backup-file"></span>').text(item.name));
+
+                    if (item.local) {
+                        $name.find('.wpcb-backup-date').append($('<span class="wpcb-tag"></span>').text(wpcb.i18n.on_server));
+                    }
+
+                    var $actions = $('<td class="wpcb-col-actions"></td>')
+                        .append($('<button type="button" class="button wpcb-remote-download"></button>').text(wpcb.i18n.download).prop('disabled', item.local))
+                        .append($('<button type="button" class="button button-link-delete wpcb-remote-delete"></button>').text(wpcb.i18n.delete));
+
+                    $tbody.append(
+                        $('<tr></tr>').attr('data-name', item.name)
+                            .append($name)
+                            .append($('<td class="wpcb-col-size"></td>').text(item.size))
+                            .append($actions)
+                    );
+                });
+
+                $body.append($('<table class="widefat striped wpcb-backups"></table>').append($tbody));
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            });
+    }
+
+    $('.wpcb-remote-show').on('click', function () {
+        loadRemote($(this).closest('.wpcb-remote'));
+    });
+
+    $(document).on('click', '.wpcb-remote-download', function () {
+
+        var $box = $(this).closest('.wpcb-remote');
+        var name = $(this).closest('tr').data('name');
+
+        $box.find('button').not('.wpcb-transfer-cancel').prop('disabled', true);
+
+        startTransfer('down', $box.data('remote'), name, $box, function () {
+            $box.find('button').prop('disabled', false);
+            loadRemote($box, true);
+        });
+    });
+
+    $(document).on('click', '.wpcb-remote-delete', function () {
+
+        var $box = $(this).closest('.wpcb-remote');
+        var $row = $(this).closest('tr');
+
+        if (!window.confirm(wpcb.i18n.cloud_delete_confirm)) {
+            return;
+        }
+
+        storageAction($(this), $box.find('.wpcb-remote-status'), {
+            action: 'wpcb_remote_delete',
+            remote: $box.data('remote'),
+            name: $row.data('name')
+        }, function () {
+            $row.fadeOut(200, function () {
+                $row.remove();
+            });
+        });
+    });
+
+    $('#wpcb-send-start').on('click', function () {
+
+        var $box = $('#wpcb-send-existing');
+        var remote = $('#wpcb-send-remote').val();
+
+        $box.find('button, select').not('.wpcb-transfer-cancel').prop('disabled', true);
+
+        startTransfer('up', remote, $('#wpcb-send-file').val(), $box, function () {
+
+            $box.find('button, select').prop('disabled', false);
+
+            // Refresh that destination's list if it's open.
+            var $list = $('.wpcb-remote[data-remote="' + remote + '"]');
+
+            if ($list.find('table, .wpcb-empty').length) {
+                loadRemote($list, true);
+            }
+        });
     });
 
     /** Clears other plugins' backup data. */

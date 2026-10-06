@@ -74,7 +74,7 @@ $name = WPCB_Scheduler::OPTION;
             <?php if ($last === null) : ?>
                 <span class="wpcb-stat-value"><?php esc_html_e('None yet', 'rebuzz-backup-and-restore'); ?></span>
             <?php else : ?>
-                <?php if ($last['status'] === 'completed' && empty($last['files_failed'])) : ?>
+                <?php if (WPCB_Scheduler::isClean($last)) : ?>
                     <span class="wpcb-stat-value wpcb-badge wpcb-badge-ok">
                         <span class="dashicons dashicons-yes-alt" aria-hidden="true"></span>
                         <?php esc_html_e('Completed', 'rebuzz-backup-and-restore'); ?>
@@ -101,8 +101,8 @@ $name = WPCB_Scheduler::OPTION;
                         &middot; <?php echo esc_html(size_format((int) $last['size'])); ?>
                     <?php endif; ?>
                 </span>
-                <?php if ($last['status'] !== 'completed' || !empty($last['files_failed'])) : ?>
-                    <span class="wpcb-stat-note"><?php echo esc_html($last['message']); ?></span>
+                <?php if (!WPCB_Scheduler::isClean($last)) : ?>
+                    <span class="wpcb-stat-note" style="white-space:pre-line;"><?php echo esc_html($last['message']); ?></span>
                 <?php endif; ?>
             <?php endif; ?>
         </div>

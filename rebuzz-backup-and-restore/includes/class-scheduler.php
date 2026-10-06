@@ -222,8 +222,12 @@ class WPCB_Scheduler
                 return self::skip(__('A restore was running, so no backup was made.', 'rebuzz-backup-and-restore'));
             }
 
-            if (wpcb_backup_lock_check() !== null) {
-                return self::skip(__('Another backup was already running.', 'rebuzz-backup-and-restore'));
+            $active = wpcb_backup_lock_check();
+
+            if ($active !== null) {
+                return self::skip(((new WPCB_Job($active))->get()['kind'] ?? '') === 'transfer'
+                    ? __('A backup was being downloaded from or sent to the cloud, so no backup was made.', 'rebuzz-backup-and-restore')
+                    : __('Another backup was already running.', 'rebuzz-backup-and-restore'));
             }
 
             if (!wpcb_storage_is_private()) {
@@ -469,7 +473,7 @@ class WPCB_Scheduler
         // Kept until the next run starts, so a late second caller can't claim it again.
         $claim = 'wpcb_schedule_done_' . md5($job->id());
 
-        if (!add_option($claim, time(), '', false)) {
+        if (!wpcb_claim_once($claim, time())) {
             return;
         }
 
@@ -477,12 +481,16 @@ class WPCB_Scheduler
 
         wp_unschedule_hook(self::RESUME_HOOK);
 
+        $upload = isset($jobState['upload']) && is_array($jobState['upload']) ? $jobState['upload'] : [];
+
         $last = [
-            'status'       => $status,
-            'time'         => time(),
-            'message'      => (string) ($jobState['message'] ?? ''),
-            'elapsed'      => (int) ($jobState['elapsed'] ?? 0),
-            'files_failed' => (int) ($jobState['files_failed'] ?? 0),
+            'status'        => $status,
+            'time'          => time(),
+            'message'       => (string) ($jobState['message'] ?? ''),
+            'elapsed'       => (int) ($jobState['elapsed'] ?? 0),
+            'files_failed'  => (int) ($jobState['files_failed'] ?? 0),
+            'upload_failed' => (int) ($jobState['upload_failed'] ?? 0),
+            'uploads'       => WPCB_Storage::summaryLines($upload),
         ];
 
         if ($status === 'completed' && !empty($jobState['zip']) && is_file($jobState['zip'])) {
@@ -493,6 +501,12 @@ class WPCB_Scheduler
             self::remember($last['file']);
 
             $last['deleted'] = self::applyRetention();
+
+        } elseif ($status === 'completed' && !empty($upload['local_removed'])) {
+
+            // Only in the cloud now, as the Storage tab asked.
+            $last['file'] = (string) $upload['name'];
+            $last['size'] = (int) $upload['size'];
         }
 
         self::saveState(['last' => $last]);
@@ -620,15 +634,19 @@ class WPCB_Scheduler
             return;
         }
 
-        $clean = $last['status'] === 'completed' && empty($last['files_failed']);
-
-        if ($settings['notify'] === 'failure' && $clean) {
+        if ($settings['notify'] === 'failure' && self::isClean($last)) {
             return;
         }
 
         [$subject, $body] = self::message($last);
 
         wp_mail($settings['email'], $subject, $body);
+    }
+
+    /** Completed with nothing skipped and every upload done. */
+    public static function isClean(array $last)
+    {
+        return $last['status'] === 'completed' && empty($last['files_failed']) && empty($last['upload_failed']);
     }
 
     /** @return array{0: string, 1: string} Subject and plain-text body. */
@@ -641,7 +659,7 @@ class WPCB_Scheduler
 
         if ($last['status'] === 'completed') {
 
-            $subject = empty($last['files_failed'])
+            $subject = self::isClean($last)
                 /* translators: %s: site name */
                 ? sprintf(__('[%s] Backup completed', 'rebuzz-backup-and-restore'), $site)
                 /* translators: %s: site name */
@@ -666,9 +684,14 @@ class WPCB_Scheduler
                 $lines[] = sprintf(_n('Older scheduled backups deleted: %d', 'Older scheduled backups deleted: %d', (int) $last['deleted'], 'rebuzz-backup-and-restore'), (int) $last['deleted']);
             }
 
+            if (!empty($last['uploads'])) {
+                $lines[] = '';
+                $lines = array_merge($lines, $last['uploads']);
+            }
+
             if (!empty($last['files_failed'])) {
                 $lines[] = '';
-                $lines[] = $last['message'];
+                $lines[] = strtok($last['message'], "\n");
             }
 
         } else {
