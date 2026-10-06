@@ -16,6 +16,7 @@ Complete WordPress Backup & Restore Solution.
 - `main`- released versions, updated by merging pull requests from `restore-diagnostics`.
 - `restore-diagnostics` - development. The current version is the `Stable tag` in
   `rebuzz-backup-and-restore/readme.txt`.
+- google drive integration is in next release
 
 ## Releases
 
