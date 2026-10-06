@@ -370,6 +370,18 @@ jQuery(function ($) {
 
                     renderNotice($('#wpcb-restore-status'), noticeClass, state.message, true);
 
+                    // Rewrite rules were rebuilt before the restored plugins loaded - see permalink_notice().
+                    $('#wpcb-restore-status').append(
+                        $('<div class="notice notice-info"></div>').append(
+                            $('<p></p>').text(wpcb.i18n.permalinks),
+                            $('<p></p>').append(
+                                $('<a class="button button-primary"></a>')
+                                    .attr('href', wpcb.permalinks_url)
+                                    .text(wpcb.i18n.permalinks_button)
+                            )
+                        )
+                    );
+
                     return;
                 }
 
@@ -573,7 +585,7 @@ jQuery(function ($) {
                     if ($tbody.find('tr').length === 0) {
 
                         $tbody.closest('table').replaceWith(
-                            '<p>No backups available.</p>'
+                            $('<p class="wpcb-empty"></p>').text(wpcb.i18n.no_backups)
                         );
                     }
                 });
@@ -652,6 +664,122 @@ jQuery(function ($) {
 
         });
 
+    });
+
+    /** Schedule tab: only the rows that apply to the chosen frequency. */
+
+    function toggleScheduleRows() {
+
+        var frequency = $('#wpcb-frequency').val();
+
+        $('.wpcb-when-weekly').toggle(frequency === 'weekly');
+        $('.wpcb-when-on').toggle(frequency !== 'off');
+    }
+
+    if ($('#wpcb-frequency').length) {
+        toggleScheduleRows();
+        $('#wpcb-frequency').on('change', toggleScheduleRows);
+    }
+
+    /** Sends a test email to the address typed in, saved or not. */
+
+    $('#wpcb-test-email').on('click', function () {
+
+        var $button = $(this);
+        var $status = $('#wpcb-test-email-status');
+
+        $button.prop('disabled', true);
+        $status.removeClass('is-error').text(wpcb.i18n.sending);
+
+        $.post(wpcb.ajax_url, {
+            action: 'wpcb_test_email',
+            nonce: wpcb.nonce,
+            email: $('#wpcb-email').val()
+        }, null, 'json')
+            .done(function (response) {
+                $status.toggleClass('is-error', !response.success).text(response.data);
+            })
+            .fail(function () {
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            })
+            .always(function () {
+                $button.prop('disabled', false);
+            });
+    });
+
+    /** Progress of a background (scheduled) backup; reloads the page when it ends. */
+
+    function pollBackground() {
+
+        $.post(wpcb.ajax_url, {
+            action: 'wpcb_background_status',
+            nonce: wpcb.nonce
+        }, null, 'json')
+            .done(function (response) {
+
+                var state = response && response.success ? response.data : null;
+
+                if (state && state.status === 'running') {
+
+                    $('#wpcb-bg-progress-bar')
+                        .css('width', state.progress + '%')
+                        .text(state.progress + '%');
+
+                    $('#wpcb-bg-message').text(state.message);
+
+                    setTimeout(pollBackground, 3000);
+
+                    return;
+                }
+
+                $('#wpcb-bg-message').text(wpcb.i18n.bg_done);
+
+                setTimeout(function () {
+                    location.reload();
+                }, 1500);
+            })
+            .fail(function () {
+                setTimeout(pollBackground, 6000);
+            });
+    }
+
+    if (String($('#wpcb-bg').data('running')) === '1') {
+        setTimeout(pollBackground, 3000);
+    }
+
+    /** Starts a scheduled-style backup in the background. */
+
+    $('#wpcb-run-schedule-now').on('click', function () {
+
+        var $button = $(this);
+        var $status = $('#wpcb-run-now-status');
+
+        $button.prop('disabled', true);
+        $status.removeClass('is-error').text(wpcb.i18n.starting);
+
+        $.post(wpcb.ajax_url, {
+            action: 'wpcb_run_schedule_now',
+            nonce: wpcb.nonce
+        }, null, 'json')
+            .done(function (response) {
+
+                if (!response.success) {
+                    $button.prop('disabled', false);
+                    $status.addClass('is-error').text(response.data);
+                    return;
+                }
+
+                $status.text('');
+                $('#wpcb-bg').show();
+
+                $('html, body').animate({ scrollTop: $('#wpcb-bg').offset().top - 60 }, 200);
+
+                setTimeout(pollBackground, 1500);
+            })
+            .fail(function () {
+                $button.prop('disabled', false);
+                $status.addClass('is-error').text(wpcb.i18n.no_server);
+            });
     });
 
     /** Clears other plugins' backup data. */

@@ -62,6 +62,19 @@ function wpcb_uninstall_site()
 {
     delete_option('wpcb_settings');
     delete_option('wpcb_version');
+    delete_option('wpcb_permalink_reminder');
+
+    // Scheduled backups. The plugin's classes aren't loaded here, hence the literal names.
+    wp_unschedule_hook('wpcb_scheduled_backup');
+    wp_unschedule_hook('wpcb_scheduled_backup_resume');
+    $wpcbScheduleState = get_option('wpcb_schedule_state', []);
+    if (!empty($wpcbScheduleState['claim']) && strpos($wpcbScheduleState['claim'], 'wpcb_schedule_done_') === 0) {
+        delete_option($wpcbScheduleState['claim']);
+    }
+    delete_option('wpcb_schedule');
+    delete_option('wpcb_schedule_state');
+    delete_option('wpcb_scheduled_backups');
+
     // Legacy home of the moved-aside-folders record; it lives in a file now.
     delete_option('wpcb_quarantine');
 

@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,19 +19,21 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 = What it does =
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
+* **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
 * **Archives are not left guessable.** A backup is a complete copy of your site, database included, so every archive filename ends in 32 random characters - the file can't be downloaded without knowing that name. Web-server rules that deny direct access are written alongside them for Apache and IIS.
 * **Multisite aware.** A network administrator can back up the network; an individual site admin gets their own site and nothing else. The restore side enforces the same boundary, so nobody can drop another site's data onto theirs.
 * Free disk space and directory permissions are checked before a restore begins, so it fails early and safely rather than halfway through.
-* Leftover storage from All-in-One WP Migration and UpdraftPlus is detected, and you can clear it from the dashboard.
+* Leftover storage from All-in-One WP Migration and UpdraftPlus is detected, and you can clear it from the Backups tab.
+* After a restore, you're reminded to open Permalink Settings once, which rebuilds the link rules your plugins add so none of their pages show "Page not found".
 
 == Installation ==
 
 1. Upload the plugin files to `/wp-content/plugins/rebuzz-backup-and-restore`, or install it through the Plugins screen in WordPress.
 2. Activate it from the Plugins screen.
-3. Open **ReBuzz Backup > Dashboard** to make your first backup, or **ReBuzz Backup > Restore** to bring one back.
+3. Open **ReBuzz Backup** and click **Create Backup** to make your first backup, or use the **Restore** tab to bring one back.
 
 == Frequently Asked Questions ==
 
@@ -49,15 +51,17 @@ By default in `wp-content/uploads/rebuzz-backup-and-restore/backups/`. The plugi
 
 Because of that the plugin actively tests the folder before every backup: it requests a temporary file from it over HTTP with no login. If the server hands that file over, the backup is refused rather than created and left downloadable - a backup contains your whole database, so the plugin will not produce one it cannot keep private.
 
+Some hosts block a site from making requests to itself, so the test cannot run. Backups are refused then too: the server's name cannot settle it, because many hosts put Nginx, which ignores `.htaccess`, in front of Apache.
+
 To fix it, move backups out of the web root by adding this to `wp-config.php`:
 
 `define( 'WPCB_BACKUP_DIR', '/full/path/outside/public_html/rebuzz-backups' );`
 
-The path must be absolute and writable by PHP, and should sit outside the folder your web server serves. Archives already in the old location are not moved automatically - the Dashboard will tell you they are there so you can move them yourself.
+The path must be absolute and writable by PHP, and should sit outside the folder your web server serves. Archives already in the old location are not moved automatically - the Backups tab will tell you they are there so you can move them yourself.
 
 = My backup is too big to upload. Now what? =
 
-Put the ZIP in `wp-content/uploads/rebuzz-backup-and-restore/backups/` using FTP or your host's file manager. It appears in the restore list automatically and skips the browser upload limit entirely. The exact path is also shown on **ReBuzz Backup > Dashboard**, under the backups list.
+Put the ZIP in `wp-content/uploads/rebuzz-backup-and-restore/backups/` using FTP or your host's file manager. It appears in the restore list automatically and skips the browser upload limit entirely. The exact path is also shown on the **ReBuzz Backup** screen, under the backups list.
 
 = Does it support Multisite? =
 
@@ -67,7 +71,73 @@ Yes. A network administrator can back up the whole network, while an individual 
 
 Every file and the database dump is hashed with SHA-256 when the backup is made, and those hashes are re-checked before the restore writes anything. If one doesn't match, the restore stops rather than continuing with a corrupt archive.
 
+= How do scheduled backups run without my browser open? =
+
+WordPress's scheduler (WP-Cron) starts the backup at the hour you picked. The site then asks itself for each step in turn, the same small steps a manual backup takes, so the same time and memory limits apply. If those requests are blocked by the host, WP-Cron carries the backup on by itself every few minutes, and a backup that stops making progress for ten minutes is marked failed and reported.
+
+= Why didn't my scheduled backup start exactly on time? =
+
+WP-Cron only runs when someone visits the site, so on a quiet site a backup can start a little late. If your host offers real cron jobs, point one at `wp-cron.php` every few minutes. If `DISABLE_WP_CRON` is set in wp-config.php, scheduled backups only run when your host runs `wp-cron.php` for you - the Schedule tab tells you when that's the case.
+
+= Will scheduled backups delete my other backups? =
+
+No. Only backups the schedule made on this site are ever deleted to keep the number you chose. Backups you create yourself, and ones you upload or copy in, are never deleted automatically.
+
+= I'm not receiving the emails. =
+
+Use **Send test email** on the Schedule tab. If that email doesn't arrive either, WordPress on your host can't send mail yet - an SMTP plugin usually fixes it. Check the spam folder too.
+
+== Screenshots ==
+
+1. The Backups tab: when the last backup ran, how much space backups use, whether the backup folder is private, and every backup ready to download, restore or delete.
+2. A backup running in small batches, with elapsed time and an estimate of what's left.
+3. The Restore tab: pick a backup already on the server, or upload one.
+4. A finished restore, with a count of what it put back and the one step left: opening Permalink Settings.
+5. The Settings tab, with what each setting changes and the system details to share when asking for help.
+6. The Schedule tab: daily or weekly backups at a chosen hour, how many to keep, and email notices.
+
 == Changelog ==
+
+= 1.7.0 =
+* Added: scheduled backups, daily or weekly at an hour in your site's timezone, on a new Schedule tab. They run in the background with no browser open: the site requests each step itself, taking the same small steps as a manual backup, and WP-Cron carries the backup on if those requests are blocked. The chosen hour holds across daylight-saving changes.
+* Added: keep the last 1 to 50 scheduled backups. Older scheduled backups are deleted when a new one finishes; backups you make yourself, upload or copy in are never deleted.
+* Added: email notices to one or more addresses, either only when something goes wrong or after every scheduled backup, with a Send test email button.
+* Added: Run scheduled backup now, a Next backup card on the Backups tab, a Scheduled tag on backups the schedule made, and live progress of a background backup on both tabs.
+* Added: a scheduled backup that makes no progress for ten minutes is marked failed and reported, and releases its lock, instead of blocking later backups.
+* Changed: a scheduled backup never starts while a restore or another backup is running; it is skipped and reported instead.
+* Changed: a restore keeps the schedule's record of the backups it made, so keep-the-last-N still deletes backups made after the restored one.
+
+= 1.6.0 =
+* Changed: the plugin's screens are now tabs - Backups, Restore and Settings - under a single ReBuzz Backup menu item, laid out in cards. The Backups tab opens with when the last backup ran, how much space backups use and whether the backup folder is private. Links to the old Restore and Settings pages still work.
+* Added: after a restore, a reminder to open Permalink Settings. The restore rebuilds the link rules before the restored plugins have loaded, so rules those plugins add - shop, product or form pages, for example - could show "Page not found". Opening that page rebuilds them and ends the reminder.
+* Added: the Settings tab explains what including WordPress core changes, and now holds the system information that used to fill the top of the dashboard.
+* Fixed: the Temporary Files panel showed on every site, reporting about 723 B, because the temporary folder's own access-blocking files were counted as leftovers. Clearing temporary files also deleted those files; they are now kept.
+* Fixed: other backup plugins' folders are listed only when they hold something to clear, instead of showing "0 B".
+
+= 1.5.4 =
+* Security: on hosts whose open_basedir setting keeps PHP out of the web root, a WPCB_BACKUP_DIR inside the web root was accepted as private, so backups saved there could be downloaded by anyone. PHP could not look up the web root there, and the check left it out instead of comparing against its path as written. It now compares against the path, so such a folder is refused and backups fall back to the uploads folder and its privacy test.
+* Fixed: on those hosts the same check wrote "open_basedir restriction in effect" warnings to the PHP error log during every backup and restore.
+
+= 1.5.3 =
+* Security: when the plugin cannot test whether the backups folder is private - some hosts block a site from making requests to itself - backups are now refused, as they already were on Nginx. It used to trust the server's name instead, but many hosts put Nginx in front of Apache: PHP reports Apache while Nginx serves the archive and ignores the .htaccess rule. Setting WPCB_BACKUP_DIR to a folder outside the web root fixes it, as before.
+* Changed: a privacy test that could not run is retried after five minutes instead of a day, so a passing network error does not turn backups off for long.
+* Fixed: a finished backup is discarded only when the backups folder is proven public, not when the test repeated after the backup cannot run.
+* Fixed: a deleted backups folder is recreated, instead of blocking new backups and uploads until the plugin was reactivated.
+
+= 1.5.2 =
+* Fixed: on hosts that disable PHP's disk_free_space(), uploading a backup or starting a restore crashed on PHP 8 with "Call to undefined function", and on PHP 7.4 was refused for having "0 B" free. The free-space check is now skipped there, as it already was when the host could not measure the space; the storage test that runs before every restore still catches a full account.
+* Fixed: on hosts that disable PHP's ini_set(), downloading a backup crashed on PHP 8 when the server had output compression turned on.
+
+= 1.5.1 =
+* Fixed: restoring a backup made on a different WordPress version could send wp-admin to the "Database Update Required" screen. WordPress core used to be copied file by file across many requests, so the site ran a mix of old and new core, and new core against the old database. Core is now swapped in by folder renames in one request, together with the database; if the database swap fails, the previous core is put back.
+* Fixed: before any plugin, theme or upload is overwritten, the restore now checks that WordPress core can actually be swapped on this server, and stops with the site unchanged if it can't.
+* Fixed: on Windows servers, the core swap could not rename wp-admin while the restore request was running from it. It now swaps that folder's contents one by one instead.
+* Fixed: the new core is swapped in straight from the extracted backup, and the old one is moved into the restore's own folder, so no copy of core sits in the website's root folder during a restore - where a server without .htaccess support, such as Nginx, could serve it.
+* Fixed: a PHP crash while WordPress was still loading, part-way through a restore, reported the error but left the restore marked as running and locked. It now marks the restore failed, puts plugins back and releases the lock.
+* Fixed: a restore killed outright by the host no longer blocks new restores until its record expires; one with no progress for 10 minutes is treated as stopped, as backups already were.
+* Fixed: database export and URL rewrite batches are sized from the real size of the rows about to be read, not from the table's average row length, so a run of small rows followed by very large ones can no longer exhaust PHP's memory limit.
+* Changed: crash messages only suggest raising the time or memory limit when that is what the error actually was.
+* Added: the restore screen warns before a restore when the backup was made on a different WordPress version from this site.
 
 = 1.5.0 =
 * Fixed: a failed restore no longer leaves a half-replaced database. The backup is now imported into temporary staging tables while your live site stays untouched, and only swapped in - all tables at once - after every file is in place. If the import fails, the site is exactly as it was.
@@ -124,6 +194,24 @@ Every file and the database dump is hashed with SHA-256 when the backup is made,
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.7.0 =
+Adds scheduled daily or weekly backups that run in the background, keep the last few, and email you when something goes wrong.
+
+= 1.6.0 =
+A clearer, tabbed admin screen, a reminder to refresh your permalinks after a restore so plugin pages don't show "Page not found", and a fix for the Temporary Files panel that showed on every site.
+
+= 1.5.4 =
+On hosts that use open_basedir, a WPCB_BACKUP_DIR inside the web root could be accepted as private, leaving backups downloadable. Recommended for anyone who has set WPCB_BACKUP_DIR.
+
+= 1.5.3 =
+Backups are now refused when the plugin cannot test that the backup folder is private, instead of guessing from the server's name - on hosts that put Nginx in front of Apache, that guess could leave an archive downloadable. If backups stop, the Dashboard shows the one line to add to wp-config.php.
+
+= 1.5.2 =
+Fixes crashes when uploading, restoring or downloading a backup on hosts that disable some PHP functions. Recommended for anyone on shared hosting.
+
+= 1.5.1 =
+Restoring a backup from a different WordPress version no longer sends wp-admin to the database update screen, and a restore that cannot replace WordPress core now stops before changing anything. Also fixes restores on Windows servers and memory errors on tables with very large rows. Recommended for everyone.
 
 = 1.5.0 =
 Restores are now all-or-nothing for the database: a failed import leaves your site untouched. Also fixes restores involving database views, MySQL 8 collations and DEFINER clauses, and a crash that left all plugins deactivated. Recommended for everyone.

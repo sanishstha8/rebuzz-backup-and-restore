@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.5.0
+ * Version: 1.7.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -48,6 +48,10 @@ if (!defined('ABSPATH')) {
         'wpcb_delete_backup',
         'wpcb_clear_temp',
         'wpcb_clear_foreign_backups',
+        'wpcb_run_schedule_now',
+        'wpcb_background_step',
+        'wpcb_background_status',
+        'wpcb_test_email',
     ];
 
     if (!in_array($action, $ours, true)) {
@@ -86,7 +90,7 @@ if (!defined('ABSPATH')) {
      * request that registers it, and wp_cron() runs on 'init', long
      * after this.
      */
-    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step'], true)) {
+    if (in_array($action, ['wpcb_backup_step', 'wpcb_restore_step', 'wpcb_background_step'], true)) {
         add_filter('pre_get_ready_cron_jobs', '__return_empty_array');
     }
 
@@ -110,10 +114,12 @@ if (!defined('ABSPATH')) {
     /*
      * Fallback for a fatal hit before a step's own crash handler exists
      * (during bootstrap, or in a start_* handler): answer with the real
-     * error as JSON. WPCB_Admin::guardAgainstFatalError() defines
+     * error as JSON, and fail the job and free its lock the way the
+     * step guard would - otherwise the lock blocks every later restore.
+     * WPCB_Admin::guardAgainstFatalError() defines
      * WPCB_STEP_GUARD_ACTIVE when it takes over.
      */
-    register_shutdown_function(function () {
+    register_shutdown_function(function () use ($action) {
 
         if (defined('WPCB_STEP_GUARD_ACTIVE')) {
             return;
@@ -123,6 +129,37 @@ if (!defined('ABSPATH')) {
 
         if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
             return;
+        }
+
+        // Before 'init', translating this plugin's text raises a "loaded too early" notice on WP 6.7+.
+        add_filter('doing_it_wrong_trigger_error', function ($trigger, $function, $notice) {
+            return ($function === '_load_textdomain_just_in_time' && strpos($notice, 'rebuzz-backup-and-restore') !== false) ? false : $trigger;
+        }, 10, 3);
+
+        $message = sprintf(
+            /* translators: 1: PHP error message, 2: line number, 3: file name */
+            __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s).', 'rebuzz-backup-and-restore'),
+            $error['message'],
+            $error['line'],
+            basename($error['file'])
+        );
+
+        // The crash may be in this plugin's own files, before its classes loaded.
+        if (class_exists('WPCB_Admin') && function_exists('wpcb_fatal_error_hint')) {
+
+            $message .= ' ' . wpcb_fatal_error_hint($error['message']);
+
+            try {
+
+                $crashed = WPCB_Admin::crashedRequestJob($action);
+
+                if ($crashed !== null) {
+                    WPCB_Admin::recordCrash($crashed[0], $crashed[1], $message);
+                }
+
+            } catch (\Throwable $e) {
+                // Still answer with the original error below.
+            }
         }
 
         while (ob_get_level() > 0) {
@@ -136,18 +173,12 @@ if (!defined('ABSPATH')) {
 
         echo json_encode([
             'success' => false,
-            'data' => sprintf(
-                /* translators: 1: PHP error message, 2: line number, 3: file name */
-                __('A PHP fatal error stopped this request: %1$s (line %2$d of %3$s). Check your host\'s PHP error log for the full trace.', 'rebuzz-backup-and-restore'),
-                $error['message'],
-                $error['line'],
-                basename($error['file'])
-            )
+            'data' => $message
         ]);
     });
 })();
 
-define('WPCB_VERSION', '1.5.0');
+define('WPCB_VERSION', '1.7.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 

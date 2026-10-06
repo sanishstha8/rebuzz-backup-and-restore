@@ -13,18 +13,22 @@ if (!defined('ABSPATH')) {
  *   1 - Validate manifest.json and DB checksum.
  *   2 - Verify each file's checksum before touching anything live.
  *   3 - Import database.sql into staging tables (live DB untouched).
- *   4 - Build list of files to restore.
- *   5 - Copy files back into place.
- *   6 - Swap the staging tables in with one atomic RENAME TABLE.
- *   7 - Rewrite old domain references (skipped if same domain).
- *   8+ - Finish: clean up workspace, report success.
+ *   4 - Build lists of files to restore: WordPress core, and the rest.
+ *   5 - Copy core into a staging folder beside the live one.
+ *   6 - Copy the rest (plugins, themes, uploads...) into place.
+ *   7 - In one request: swap core in by directory renames, then the
+ *       staging tables with one atomic RENAME TABLE.
+ *   8 - Rewrite old domain references (skipped if same domain).
+ *   9+ - Finish: clean up workspace, report success.
  *
  * Everything that can fail on the database - a bad collation, a
- * DEFINER, a full disk - happens in step 3, before any file is
- * overwritten, so a database failure leaves the site exactly as it
- * was. The swap waits until the files are in place so active_plugins/
- * theme options never point at files that aren't on disk yet - which
- * would have WordPress deactivating plugins mid-restore.
+ * DEFINER, a full disk - happens in step 3, and staging core in step 5,
+ * before any file is overwritten, so a failure there leaves the site
+ * exactly as it was. The swap waits until the files are in place so
+ * active_plugins/theme options never point at files that aren't on
+ * disk yet - which would have WordPress deactivating plugins
+ * mid-restore. Core and database swap together: new core against the
+ * old database sends wp-admin to upgrade.php (see WPCB_Core_Swap).
  */
 // phpcs:disable WordPress.WP.AlternativeFunctions -- WP_Filesystem has no streaming API; archives are moved in chunks to stay inside memory limits.
 // phpcs:disable PluginCheck.CodeAnalysis.WriteFile -- restoring a site means writing its files back under ABSPATH; that is the feature.
@@ -127,12 +131,15 @@ class WPCB_Restore_Job
                 return $this->stepScanFiles();
 
             case 5:
-                return $this->stepRestoreFiles();
+                return $this->stepStageCore();
 
             case 6:
-                return $this->stepSwapDatabase();
+                return $this->stepRestoreFiles();
 
             case 7:
+                return $this->stepSwapDatabase();
+
+            case 8:
                 return $this->stepRewriteUrls();
 
             default:
@@ -671,12 +678,15 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 6: swap the staged tables in (one atomic RENAME TABLE), then
-     * redo what the imported tables overwrote: this site's URL, the
-     * admin's login and session, and plugin isolation. Views, triggers
-     * and routines deferred by step 3 run last; a failure there is a
-     * warning, not a failed restore - undoing the swap now would put the
-     * old database back under the new files.
+     * Step 7: swap staged core in (directory renames), then the staged
+     * tables (one atomic RENAME TABLE), in the same request - so new
+     * core never runs against the old database or the other way round.
+     * If the database swap fails, core is renamed back. Then redo what
+     * the imported tables overwrote: this site's URL, the admin's login
+     * and session, and plugin isolation. Views, triggers and routines
+     * deferred by step 3 run last; a failure there is a warning, not a
+     * failed restore - undoing the swap now would put the old database
+     * back under the new files.
      */
     private function stepSwapDatabase()
     {
@@ -691,21 +701,54 @@ class WPCB_Restore_Job
 
         if (empty($state['db_swapped'])) {
 
+            // Read now, in this request: the swap below replaces them with the backup's.
+            $this->job->update(['preserve_plugin_options' => $this->capturePluginOptions()]);
+
+            $core = new WPCB_Core_Swap($workspace);
+            $withCore = !empty($state['core_staged']);
+
+            if ($withCore) {
+
+                $coreSwap = $core->swap($this->coreRootFiles($workspace));
+
+                if (!$coreSwap['ok']) {
+
+                    $this->logger->log('WordPress core swap failed: ' . $coreSwap['error']);
+
+                    return $this->fail(sprintf(
+                        /* translators: %s: the underlying error */
+                        __('Could not switch the restored WordPress core in: %s. The previous core and database are still in place.', 'rebuzz-backup-and-restore'),
+                        $coreSwap['error']
+                    ));
+                }
+            }
+
             $swap = $database->swapStaged(!empty($plan['dump_tables']) ? (array) $plan['dump_tables'] : []);
 
             if (!$swap['ok']) {
 
                 $this->logger->log('Database swap failed: ' . $swap['error']);
 
+                if ($withCore && $core->rollback() === false) {
+                    $this->logger->log('Could not put the previous WordPress core back after the failed database swap - it is in ' . $core->oldPath() . '.');
+                }
+
                 return $this->fail(sprintf(
                     /* translators: %s: the underlying database error message */
-                    __('Could not switch the restored database in: %s. The previous database is still in place.', 'rebuzz-backup-and-restore'),
+                    __('Could not switch the restored database in: %s. The previous database and WordPress core are still in place.', 'rebuzz-backup-and-restore'),
                     $swap['error']
                 ));
             }
 
+            // First, before anything else can crash: from here a rollback would mismatch core and database.
+            $core->commit();
+
             // Also re-creates the job's transient - the swap replaced the wp_options it lived in.
             $this->job->update(['db_swapped' => true]);
+
+            if ($withCore) {
+                $this->logger->log(sprintf('Swapped in the restored WordPress core: %d item(s).', $coreSwap['swapped']));
+            }
 
             $this->logger->log(sprintf('Swapped in the restored database: %d table(s).', count($swap['swapped'])));
         }
@@ -713,6 +756,7 @@ class WPCB_Restore_Job
         // Once, right after the swap - see this method's docblock.
         $this->restorePreservedSiteUrl();
         $this->restorePreservedAdminIdentity();
+        $this->restorePreservedPluginOptions();
         $this->refreshAdminSession();
         $this->isolateActivePlugins();
 
@@ -745,7 +789,7 @@ class WPCB_Restore_Job
 
         $this->job->update([
             'status' => 'running',
-            'step' => 7,
+            'step' => 8,
             'progress' => 90,
             'message' => __('Database restored.', 'rebuzz-backup-and-restore'),
             'deferred_done' => true,
@@ -756,7 +800,7 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 7: rewrite hardcoded old-domain references (post content,
+     * Step 8: rewrite hardcoded old-domain references (post content,
      * GUIDs, serialized values) to this site's domain - see
      * WPCB_Url_Rewriter for why not a plain str_replace(). Complements
      * restorePreservedSiteUrl(), which only fixes siteurl/home
@@ -804,7 +848,7 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 8,
+                'step' => 9,
                 'progress' => 98,
                 'message' => __('No domain rewrite needed.', 'rebuzz-backup-and-restore')
             ]);
@@ -829,7 +873,7 @@ class WPCB_Restore_Job
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 7,
+                'step' => 8,
                 'progress' => (int) $progress,
                 'message' => sprintf(
                     /* translators: %d: number of database rows changed so far */
@@ -849,7 +893,7 @@ class WPCB_Restore_Job
 
         $this->job->update([
             'status' => 'running',
-            'step' => 8,
+            'step' => 9,
             'progress' => 98,
             'message' => __('Domain references updated.', 'rebuzz-backup-and-restore'),
             'urls_updated' => $result['rows_changed']
@@ -1258,7 +1302,7 @@ class WPCB_Restore_Job
      * of the restore - mu-plugins run unconditionally and
      * isolateActivePlugins() can't stop them (e.g. a host mu-plugin
      * repeatedly rewriting .htaccess mid-restore). Called right after
-     * step 5, before mu-plugin files could be loaded on the next poll.
+     * step 6, before mu-plugin files could be loaded on the next poll.
      * Filenames tracked in job state for reactivateMuPlugins() to
      * restore.
      *
@@ -1606,6 +1650,51 @@ class WPCB_Restore_Job
         ));
     }
 
+    /** The schedule's list of the backups it made, as it is now; absent is left out. */
+    private function capturePluginOptions()
+    {
+        $list = get_option(WPCB_Scheduler::LIST_OPTION, null);
+
+        return $list === null ? [] : [WPCB_Scheduler::LIST_OPTION => $list];
+    }
+
+    /**
+     * Merges the schedule's list back after the DB import replaced it.
+     * The backup's copy predates the backups made since (the one being
+     * restored often included), and without them keep-the-last-N never
+     * deletes those. Names of files already gone are harmless; the next
+     * keep-the-last-N drops them.
+     */
+    private function restorePreservedPluginOptions()
+    {
+        $captured = $this->job->get()['preserve_plugin_options'][WPCB_Scheduler::LIST_OPTION] ?? null;
+
+        if (!is_array($captured)) {
+            return;
+        }
+
+        $restored = get_option(WPCB_Scheduler::LIST_OPTION, []);
+        $restored = is_array($restored) ? $restored : [];
+
+        $merged = self::unionNames($restored, $captured);
+
+        if ($merged === $restored) {
+            return;
+        }
+
+        update_option(WPCB_Scheduler::LIST_OPTION, $merged, false);
+
+        $this->logger->log("Kept this site's list of scheduled backups after the database import replaced it.");
+    }
+
+    private static function unionNames($restored, $current)
+    {
+        return array_values(array_unique(array_merge(
+            is_array($restored) ? $restored : [],
+            is_array($current) ? $current : []
+        )));
+    }
+
     /**
      * Re-registers the current session in wp_usermeta, which the DB
      * import drops/recreates mid-restore. Deliberately does NOT call
@@ -1637,8 +1726,9 @@ class WPCB_Restore_Job
     const SCAN_BATCH_SIZE = 20000;
 
     /**
-     * Step 4: walk files/ and write relative paths to
-     * restore-files.txt for step 5 to batch-restore. Used to be one
+     * Step 4: walk files/ and write relative paths to core-files.txt
+     * (WordPress core, for step 5 to stage - only when the backup holds
+     * a whole core) and restore-files.txt (the rest, for step 6). Used to be one
      * RecursiveIteratorIterator pass, which could exceed PHP's time/
      * memory limit on large sites. Now walks via an explicit stack
      * persisted between calls (SCAN_BATCH_SIZE per call).
@@ -1658,29 +1748,38 @@ class WPCB_Restore_Job
 
         if (empty($state)) {
 
-            // First call: fresh file list, seed stack with files/.
-            $handle = $workspace->openWrite('restore-files.txt');
+            // First call: fresh file lists, seed stack with files/.
+            foreach (['restore-files.txt', 'core-files.txt'] as $list) {
 
-            if (!$handle) {
-                return $this->fail(__('Cannot create restore file list.', 'rebuzz-backup-and-restore'));
+                $handle = $workspace->openWrite($list);
+
+                if (!$handle) {
+                    return $this->fail(__('Cannot create restore file list.', 'rebuzz-backup-and-restore'));
+                }
+
+                fclose($handle);
             }
-
-            fclose($handle);
 
             $state = [
                 'stack' => ($root !== false && is_dir($filesDir)) ? [$filesDir] : [],
                 'count' => 0,
-                'folders' => 0
+                'core_count' => 0,
+                'folders' => 0,
+                // A backup without core must not get its stray root *.php files swapped in as one.
+                'core' => WPCB_Core_Swap::backupHasCore($filesDir)
             ];
         }
 
         $stack = $state['stack'];
         $count = (int) $state['count'];
+        $coreCount = (int) ($state['core_count'] ?? 0);
         $folders = isset($state['folders']) ? (int) $state['folders'] : 0;
+        $withCore = !empty($state['core']);
 
         $handle = $workspace->openAppend('restore-files.txt');
+        $coreHandle = $workspace->openAppend('core-files.txt');
 
-        if (!$handle) {
+        if (!$handle || !$coreHandle) {
             return $this->fail(__('Cannot open restore file list.', 'rebuzz-backup-and-restore'));
         }
 
@@ -1751,9 +1850,12 @@ class WPCB_Restore_Job
 
                         $line = $relative . PHP_EOL;
 
-                        if (fwrite($handle, $line) !== strlen($line)) {
+                        $isCore = $withCore && WPCB_Core_Swap::isCorePath($relative);
+
+                        if (fwrite($isCore ? $coreHandle : $handle, $line) !== strlen($line)) {
 
                             fclose($handle);
+                            fclose($coreHandle);
 
                             // Same reasoning as WPCB_Backup_Job's
                             // equivalent check: a miscounted $count
@@ -1766,7 +1868,11 @@ class WPCB_Restore_Job
                             );
                         }
 
-                        $count++;
+                        if ($isCore) {
+                            $coreCount++;
+                        } else {
+                            $count++;
+                        }
                     }
                 }
             }
@@ -1775,13 +1881,16 @@ class WPCB_Restore_Job
         }
 
         fclose($handle);
+        fclose($coreHandle);
 
         $finished = empty($stack);
 
         $workspace->put('scan.state.json', [
             'stack' => $stack,
             'count' => $count,
-            'folders' => $folders
+            'core_count' => $coreCount,
+            'folders' => $folders,
+            'core' => $withCore
         ]);
 
         if (!$finished) {
@@ -1791,27 +1900,35 @@ class WPCB_Restore_Job
                 'step' => 4,
                 'progress' => 56,
                 /* translators: %d: number of files found so far */
-                'message' => sprintf(__('Scanning files (%d found so far)...', 'rebuzz-backup-and-restore'), $count)
+                'message' => sprintf(__('Scanning files (%d found so far)...', 'rebuzz-backup-and-restore'), $count + $coreCount)
             ]);
 
             return true;
         }
 
-        $workspace->put('restore.state.json', [
-            'position' => 0,
-            'total' => $count,
-            'file_offset' => 0,
-            'failed' => 0
-        ]);
+        foreach (['restore.state.json' => $count, 'core.state.json' => $coreCount] as $stateFile => $total) {
 
-        $this->logger->log("Prepared file list: {$count} files in {$folders} folder(s).");
+            $workspace->put($stateFile, [
+                'position' => 0,
+                'total' => $total,
+                'file_offset' => 0,
+                'failed' => 0
+            ]);
+        }
+
+        $this->logger->log(
+            "Prepared file list: {$count} files in {$folders} folder(s)" .
+            ($withCore
+                ? ", plus {$coreCount} WordPress core files to swap in together with the database."
+                : '; the backup holds no WordPress core, so the live core is kept.')
+        );
 
         $this->job->update([
             'status' => 'running',
             'step' => 5,
-            'progress' => 58,
+            'progress' => 57,
             /* translators: %d: total number of files about to be restored */
-            'message' => sprintf(__('Preparing to restore %d files.', 'rebuzz-backup-and-restore'), $count),
+            'message' => sprintf(__('Preparing to restore %d files.', 'rebuzz-backup-and-restore'), $count + $coreCount),
             'folders_restored' => $folders
         ]);
 
@@ -1819,23 +1936,131 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 5: copy files back into place, in fixed-size batches.
+     * Step 5: get the backup's core ready to swap in - straight from the
+     * extracted backup where the filesystem allows, else copied in
+     * batches into WPCB_Core_Swap::STAGE_DIR - then check the swap can
+     * actually run. Nothing live is touched yet, so a failure here
+     * leaves the site as it was; after this, step 6 overwrites files.
+     */
+    private function stepStageCore()
+    {
+        wpcb_extend_time_limit(60);
+
+        $workspace = $this->workspace();
+        $state = $workspace->getJson('core.state.json');
+
+        if (empty($state['total'])) {
+
+            $this->job->update([
+                'status' => 'running',
+                'step' => 6,
+                'progress' => 60,
+                'message' => __('Backup holds no WordPress core; keeping this site\'s.', 'rebuzz-backup-and-restore')
+            ]);
+
+            return true;
+        }
+
+        $core = new WPCB_Core_Swap($workspace);
+
+        if (!$workspace->exists(WPCB_Core_Swap::PATHS)) {
+
+            $mode = $core->prepare($workspace->file('files'));
+
+            if ($mode === false) {
+                return $this->fail(__('Could not create a folder for the restored WordPress core next to the live one - check that the WordPress root folder is writable. Your site has not been changed.', 'rebuzz-backup-and-restore'));
+            }
+
+            if ($mode === 'in_place') {
+
+                // Nothing to copy: swap() renames core straight out of the extracted backup.
+                $state['position'] = $state['total'];
+                $workspace->put('core.state.json', $state);
+
+                $this->logger->log('WordPress core will be swapped in straight from the extracted backup, which is on the same filesystem as the site.');
+
+            } else {
+
+                $this->logger->log('The restore workspace is on a different filesystem from the site, so WordPress core is copied next to the live one to be swapped in.');
+            }
+        }
+
+        $copy = $this->copyListedFiles($workspace, 'core-files.txt', 'core.state.json', $core->stagePath());
+
+        if ($copy === false) {
+            return false;
+        }
+
+        if (!$copy['finished']) {
+
+            $this->job->update([
+                'status' => 'running',
+                'step' => 5,
+                'progress' => (int) (57 + (($copy['position'] / max(1, $copy['total'])) * 3)),
+                'message' => sprintf(
+                    /* translators: 1: number of core files staged so far, 2: total number of core files */
+                    __('Preparing WordPress core %1$d/%2$d', 'rebuzz-backup-and-restore'),
+                    $copy['position'],
+                    $copy['total']
+                )
+            ]);
+
+            return true;
+        }
+
+        // A partial core must never be swapped in.
+        if ($copy['failed'] > 0) {
+
+            return $this->fail(sprintf(
+                /* translators: 1: number of WordPress core files that could not be copied, 2: path to the log file */
+                __('%1$d WordPress core file(s) could not be copied - the disk may be full. See %2$s. Your site has not been changed.', 'rebuzz-backup-and-restore'),
+                $copy['failed'],
+                wpcb_display_path(wpcb_logs_dir() . '/restore.log')
+            ));
+        }
+
+        $blocked = $core->preflight();
+
+        if ($blocked !== null) {
+
+            $this->logger->log('WordPress core swap preflight failed: ' . $blocked);
+
+            return $this->fail(sprintf(
+                /* translators: %s: what prevents the swap, e.g. "wp-admin is not writable" */
+                __('WordPress core cannot be replaced on this server: %s. Your site has not been changed.', 'rebuzz-backup-and-restore'),
+                $blocked
+            ));
+        }
+
+        $this->logger->log("WordPress core staged: {$copy['total']} files, to be swapped in together with the database. Preflight passed.");
+
+        $this->job->update([
+            'status' => 'running',
+            'step' => 6,
+            'progress' => 60,
+            'message' => __('WordPress core prepared.', 'rebuzz-backup-and-restore'),
+            'core_staged' => true
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Step 6: copy everything but core back into place, in batches.
      */
     private function stepRestoreFiles()
     {
         wpcb_extend_time_limit(60);
 
-        $startTime = microtime(true);
-
         $workspace = $this->workspace();
 
-        $state = $workspace->getJson('restore.state.json');
+        $filesDir = $workspace->file('files');
 
-        if (empty($state)) {
+        if (empty($workspace->getJson('restore.state.json'))) {
 
             $this->job->update([
                 'status' => 'running',
-                'step' => 6,
+                'step' => 7,
                 'progress' => 85,
                 'message' => __('No files to restore.', 'rebuzz-backup-and-restore')
             ]);
@@ -1843,19 +2068,122 @@ class WPCB_Restore_Job
             return true;
         }
 
-        $position = (int) $state['position'];
-        $total = (int) $state['total'];
+        $copy = $this->copyListedFiles($workspace, 'restore-files.txt', 'restore.state.json', realpath(ABSPATH));
+
+        if ($copy === false) {
+            return false;
+        }
+
+        $position = $copy['position'];
+        $total = $copy['total'];
+        $failed = $copy['failed'];
+
+        if (!$copy['finished']) {
+
+            $progress = $total > 0
+                ? 60 + (($position / $total) * 25)
+                : 85;
+
+            $this->job->update([
+                'status' => 'running',
+                'step' => 6,
+                'progress' => (int) $progress,
+                'message' => sprintf(
+                    /* translators: 1: number of files restored so far, 2: total number of files */
+                    __('Restoring files %1$d/%2$d', 'rebuzz-backup-and-restore'),
+                    $position,
+                    $total
+                )
+            ]);
+
+            return true;
+        }
+
+        $this->logger->log("Files restored: {$position}/{$total}.");
+
+        /*
+         * Every file is now in place, so each folder on disk is whole.
+         * Only now is it safe to move aside what the backup did not
+         * contain: doing it before the copy left WordPress loading an
+         * empty or half-written plugins directory on every AJAX request
+         * of a multi-minute copy, which ended in a fatal inside a
+         * half-restored plugin. See WPCB_Quarantine.
+         */
+        $jobState = $this->job->get();
+
+        if (!empty($jobState['remove_extra_files']) && empty($jobState['swept'])) {
+
+            $sweep = WPCB_Quarantine::sweepExtras($this->job->id(), $filesDir);
+
+            $this->logger->log(sprintf(
+                'Moved aside %d item(s) the backup did not contain: %s. Nothing to move in: %s.',
+                $sweep['count'],
+                !empty($sweep['moved']) ? implode(', ', $sweep['moved']) : 'nothing',
+                !empty($sweep['skipped']) ? implode(', ', $sweep['skipped']) : 'nothing'
+            ));
+
+            $this->job->update(['swept' => true]);
+        }
+
+        // Covers anything invalidate missed (moved-aside plugins, symlinked paths); @ for opcache.restrict_api.
+        if (function_exists('opcache_reset')) {
+            @opcache_reset();
+        }
+
+        if ($failed > 0) {
+
+            $this->logger->log(
+                "{$failed} file(s) failed to restore - see entries above."
+            );
+        }
+
+        // Mu-plugin files exist on disk now, so WP loads them on the
+        // next poll - before the DB swap. Must disable here since
+        // isolateActivePlugins() can't reach mu-plugins.
+        $disabledMuPlugins = $this->temporarilyDisableAllMuPlugins();
+
+        // 'files_failed' persists in job state (update() merges) so
+        // finish() can report it later.
+        $coreState = $workspace->getJson('core.state.json');
+
+        $this->job->update([
+            'status' => 'running',
+            'step' => 7,
+            'progress' => 85,
+            'message' => __('Files restored.', 'rebuzz-backup-and-restore'),
+            'files_failed' => $failed,
+            'files_restored' => $position + (int) ($coreState['total'] ?? 0),
+            'disabled_mu_plugins' => $disabledMuPlugins
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Copy the files named in $listName from the workspace to
+     * $destRoot, resuming from and saving to $stateName. Bounded by
+     * FILE_BATCH_SIZE/TIME_BUDGET_SECONDS per call.
+     *
+     * @return array{position: int, total: int, failed: int, finished: bool}|false
+     *         False once fail() has been called.
+     */
+    private function copyListedFiles(WPCB_Restore_Workspace $workspace, $listName, $stateName, $destRoot)
+    {
+        $startTime = microtime(true);
+
+        $state = $workspace->getJson($stateName);
+
+        $position = (int) ($state['position'] ?? 0);
+        $total = (int) ($state['total'] ?? 0);
         $fileOffset = isset($state['file_offset']) ? (int) $state['file_offset'] : 0;
         $failed = isset($state['failed']) ? (int) $state['failed'] : 0;
 
         $filesDir = $workspace->file('files');
-        $root = realpath(ABSPATH);
         $ownPluginPath = $this->ownPluginRelativePath();
-
 
         if ($position < $total) {
 
-            $handle = $workspace->openRead('restore-files.txt');
+            $handle = $workspace->openRead($listName);
 
             if (!$handle) {
                 return $this->fail(__('Cannot read restore file list.', 'rebuzz-backup-and-restore'));
@@ -1933,7 +2261,7 @@ class WPCB_Restore_Job
                 }
 
                 $source = $filesDir . '/' . $relative;
-                $destination = $root . '/' . $relative;
+                $destination = $destRoot . '/' . $relative;
 
                 if (!file_exists($source)) {
 
@@ -1972,7 +2300,7 @@ class WPCB_Restore_Job
                 // same-folder overtime case above.
                 if ($processedCount % self::CHECKPOINT_INTERVAL === 0) {
 
-                    $workspace->put('restore.state.json', [
+                    $workspace->put($stateName, [
                         'position' => $position,
                         'total' => $total,
                         'file_offset' => $fileOffset,
@@ -1984,92 +2312,19 @@ class WPCB_Restore_Job
             fclose($handle);
         }
 
-        $finished = ($position >= $total);
-
-        $workspace->put('restore.state.json', [
+        $workspace->put($stateName, [
             'position' => $position,
             'total' => $total,
             'file_offset' => $fileOffset,
             'failed' => $failed
         ]);
 
-        if (!$finished) {
-
-            $progress = $total > 0
-                ? 58 + (($position / $total) * 27)
-                : 85;
-
-            $this->job->update([
-                'status' => 'running',
-                'step' => 5,
-                'progress' => (int) $progress,
-                'message' => sprintf(
-                    /* translators: 1: number of files restored so far, 2: total number of files */
-                    __('Restoring files %1$d/%2$d', 'rebuzz-backup-and-restore'),
-                    $position,
-                    $total
-                )
-            ]);
-
-            return true;
-        }
-
-        $this->logger->log("Files restored: {$position}/{$total}.");
-
-        /*
-         * Every file is now in place, so each folder on disk is whole.
-         * Only now is it safe to move aside what the backup did not
-         * contain: doing it before the copy left WordPress loading an
-         * empty or half-written plugins directory on every AJAX request
-         * of a multi-minute copy, which ended in a fatal inside a
-         * half-restored plugin. See WPCB_Quarantine.
-         */
-        $jobState = $this->job->get();
-
-        if (!empty($jobState['remove_extra_files']) && empty($jobState['swept'])) {
-
-            $sweep = WPCB_Quarantine::sweepExtras($this->job->id(), $filesDir);
-
-            $this->logger->log(sprintf(
-                'Moved aside %d item(s) the backup did not contain: %s. Nothing to move in: %s.',
-                $sweep['count'],
-                !empty($sweep['moved']) ? implode(', ', $sweep['moved']) : 'nothing',
-                !empty($sweep['skipped']) ? implode(', ', $sweep['skipped']) : 'nothing'
-            ));
-
-            $this->job->update(['swept' => true]);
-        }
-
-        // Covers anything invalidate missed (moved-aside plugins, symlinked paths); @ for opcache.restrict_api.
-        if (function_exists('opcache_reset')) {
-            @opcache_reset();
-        }
-
-        if ($failed > 0) {
-
-            $this->logger->log(
-                "{$failed} file(s) failed to restore - see entries above."
-            );
-        }
-
-        // Mu-plugin files exist on disk now, so WP loads them on the
-        // next poll - before the DB swap. Must disable here since
-        // isolateActivePlugins() can't reach mu-plugins.
-        $disabledMuPlugins = $this->temporarilyDisableAllMuPlugins();
-
-        // 'files_failed' persists in job state (update() merges) so
-        // finish() can report it later.
-        $this->job->update([
-            'status' => 'running',
-            'step' => 6,
-            'progress' => 85,
-            'message' => __('Files restored.', 'rebuzz-backup-and-restore'),
-            'files_failed' => $failed,
-            'files_restored' => $position,
-            'disabled_mu_plugins' => $disabledMuPlugins
-        ]);
-
-        return true;
+        return [
+            'position' => $position,
+            'total' => $total,
+            'failed' => $failed,
+            'finished' => ($position >= $total)
+        ];
     }
 
     /**
@@ -2304,7 +2559,7 @@ class WPCB_Restore_Job
     }
 
     /**
-     * Step 8+: clean up the (potentially large) extracted workspace
+     * Step 9+: clean up the (potentially large) extracted workspace
      * and report success.
      */
     private function finish()
@@ -2320,7 +2575,16 @@ class WPCB_Restore_Job
         // Normally already gone; catches anything a retried swap left behind.
         (new WPCB_Database())->dropWorkTables();
 
+        // The replaced core; the database no longer matches it.
+        WPCB_Core_Swap::removeLeftovers();
+
         $this->restoreCleanup();
+
+        // The flush above ran before the restored plugins loaded, so their rewrite rules may be missing.
+        wpcb_request_permalink_resave();
+
+        // The restored database brought back the schedule's cron events and state from backup time.
+        WPCB_Scheduler::afterRestore();
 
         /*
          * Succeeded, so the renamed copies stop being something to roll
@@ -2515,6 +2779,8 @@ class WPCB_Restore_Job
             (new WPCB_Database())->dropWorkTables(WPCB_Database::STAGE_PREFIX);
         }
 
+        $this->undoCoreSwap($state);
+
         /*
          * Put any renamed-aside directories back before anything else:
          * reactivateFinalPlugins() below writes active_plugins, and that
@@ -2533,6 +2799,7 @@ class WPCB_Restore_Job
         // here too so a failed restore never strands the site there.
         $this->restorePreservedSiteUrl();
         $this->restorePreservedAdminIdentity();
+        $this->restorePreservedPluginOptions();
 
         // Same reasoning: undo any plugin/mu-plugin isolation now,
         // don't leave the site stuck that way on failure.
@@ -2542,5 +2809,57 @@ class WPCB_Restore_Job
         // Release the lock now so a failure never blocks future
         // restores (belt-and-braces with wpcb_restore_lock_check()).
         wpcb_restore_lock_release();
+    }
+
+    /**
+     * Root *.php files in core-files.txt, minus ENVIRONMENT_FILES -
+     * what step 5 staged beside wp-admin and wp-includes.
+     *
+     * @return string[]
+     */
+    private function coreRootFiles(WPCB_Restore_Workspace $workspace)
+    {
+        $files = [];
+
+        foreach (file($workspace->file('core-files.txt'), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $relative) {
+
+            $relative = trim($relative);
+
+            if (strpos($relative, '/') === false && !in_array($relative, self::ENVIRONMENT_FILES, true)) {
+                $files[] = $relative;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Core swapped in but the database not (a crash between the two):
+     * put the previous core back so it matches the database again.
+     * Once the database is swapped too, the new core stays.
+     */
+    private function undoCoreSwap(array $state)
+    {
+        // No workspace() here: it would create an empty one.
+        if (empty($state['workspace']) || !is_dir($state['workspace'])) {
+            return;
+        }
+
+        $core = new WPCB_Core_Swap(new WPCB_Restore_Workspace($state['workspace']));
+
+        $undone = (empty($state['db_swapped']) && !$core->isCommitted()) ? $core->rollback() : null;
+
+        if ($undone === false) {
+
+            $this->logger->log('Could not put the previous WordPress core back after the failed restore. It is in ' . $core->oldPath() . ' - move wp-admin, wp-includes and the *.php files from there back into the WordPress root folder.');
+
+            return;
+        }
+
+        if ($undone) {
+            $this->logger->log('Put the previous WordPress core back after the failed restore.');
+        }
+
+        WPCB_Core_Swap::removeLeftovers();
     }
 }

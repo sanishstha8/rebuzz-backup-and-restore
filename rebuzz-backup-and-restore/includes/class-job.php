@@ -134,8 +134,10 @@ class WPCB_Job
         unset(
             $data['preserve_admin_pass'],
             $data['preserve_admin_login'],
+            $data['preserve_plugin_options'],
             $data['zip'],
-            $data['workspace']
+            $data['workspace'],
+            $data['token']
         );
 
         return $data;
@@ -157,6 +159,12 @@ class WPCB_Job
     public function delete()
     {
         delete_transient($this->key());
+    }
+
+    /** Whether a job with this ID exists. Unlike the constructor, never creates one. */
+    public static function exists($id)
+    {
+        return $id !== '' && is_array(get_transient('wpcb_job_' . md5($id)));
     }
 
     /**

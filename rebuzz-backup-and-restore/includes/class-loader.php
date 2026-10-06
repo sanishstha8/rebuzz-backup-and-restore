@@ -23,6 +23,7 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-extractor.php';
         require_once WPCB_PATH . 'includes/class-restore-workspace.php';
         require_once WPCB_PATH . 'includes/class-restore-job.php';
+        require_once WPCB_PATH . 'includes/class-core-swap.php';
         require_once WPCB_PATH . 'includes/class-quarantine.php';
         require_once WPCB_PATH . 'includes/class-url-rewriter.php';
         require_once WPCB_PATH . 'includes/class-logger.php';
@@ -31,6 +32,7 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-zip-stream.php';
         require_once WPCB_PATH . 'includes/class-zip-batch.php';
         require_once WPCB_PATH . 'includes/class-integrity.php';
+        require_once WPCB_PATH . 'includes/class-scheduler.php';
 
         /*
          * Holds WordPress's auto-updater off while a restore is
@@ -58,5 +60,8 @@ class WPCB_Loader
         add_action('plugins_loaded', ['WPCB_Quarantine', 'recover']);
 
         new WPCB_Admin();
+
+        // Every request, not admin-only: its cron hooks fire from wp-cron.php.
+        new WPCB_Scheduler();
     }
 }

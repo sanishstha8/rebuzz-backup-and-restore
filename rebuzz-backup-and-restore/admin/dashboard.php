@@ -6,56 +6,43 @@ if (!defined('ABSPATH')) {
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals -- included from inside a method (WPCB_Admin::dashboard() etc), so these are function-scoped, not globals.
 
-$backupDir = wpcb_backups_dir();
-
-/* Dashboard statistics */
-
-$backupCount = 0;
-$lastBackup = '-';
-
-if (is_dir($backupDir)) {
-
-    $files = glob($backupDir . '/*.zip');
-
-    if ($files) {
-
-        $backupCount = count($files);
-
-        usort($files, function ($a, $b) {
-            return filemtime($b) - filemtime($a);
-        });
-
-        $lastBackup = basename($files[0]);
-    }
-}
+$wpcbTab = 'wpcb-dashboard';
 
 /* Backup history */
 
 $history = new WPCB_History();
 $backups = $history->get_backups();
 
-/* Temp workspace usage - includes stale restore-* workspaces, which
-   live as siblings of temp/ rather than inside it (see
-   wpcb_clear_stale_restore_workspaces()), so the panel below and its
-   "Clear Temporary Files" button reflect/reclaim all of it. */
+$backupCount = count($backups);
+$backupBytes = array_sum(array_column($backups, 'bytes'));
+$latest = $backups ? $backups[0] : null;
 
-$tempSize = wpcb_directory_size(wpcb_temp_dir());
+/* Scratch files from unfinished jobs - see wpcb_temp_usage(). */
 
-foreach (wpcb_restore_workspace_dirs() as $restoreDir) {
-    $tempSize += wpcb_directory_size($restoreDir);
-}
+$tempSize = wpcb_temp_usage();
 
-/* Other plugins' leftover data */
+/* Other plugins' leftover data; empty folders have nothing to reclaim. */
 
-$foreignBackups = wpcb_detect_foreign_backups();
+$foreignBackups = array_values(array_filter(wpcb_detect_foreign_backups(), function ($folder) {
+    return $folder['size'] > 0;
+}));
 
 $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
 
+$storagePrivate = wpcb_storage_is_private();
+
+/* Schedule */
+
+$schedule = WPCB_Scheduler::settings();
+$nextRun = $schedule['frequency'] !== 'off' ? WPCB_Scheduler::nextRun() : 0;
+$scheduledNames = WPCB_Scheduler::scheduledBackups();
+$backgroundRunning = WPCB_Scheduler::runningJob() !== null;
+
 ?>
 
-<div class="wrap">
+<div class="wrap wpcb-wrap">
 
-    <h1><?php esc_html_e('ReBuzz Backup and Restore', 'rebuzz-backup-and-restore'); ?></h1>
+    <?php include WPCB_PATH . 'admin/header.php'; ?>
 
     <?php
     /*
@@ -117,7 +104,7 @@ $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
     <?php
     // Not a warning: backups are actually refused while this is true,
     // so the notice says so and gives the one line that fixes it.
-    if (!wpcb_storage_is_private()) : ?>
+    if (!$storagePrivate) : ?>
 
         <div class="notice notice-error">
             <p><strong><?php esc_html_e('Backups are turned off until your backup folder is private.', 'rebuzz-backup-and-restore'); ?></strong></p>
@@ -133,7 +120,7 @@ $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
                         esc_html(wpcb_display_path(wpcb_backups_dir()) . '/')
                     );
                 } else {
-                    esc_html_e('This site could not make a request to itself to check whether the backup folder is readable from the web, and the server is not one that reads the .htaccess rule this plugin writes. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable.', 'rebuzz-backup-and-restore');
+                    esc_html_e('This site could not make a request to itself to check whether the backup folder is readable from the web. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable. If that was a passing network problem, the check runs again within five minutes.', 'rebuzz-backup-and-restore');
                 }
                 ?>
             </p>
@@ -154,278 +141,279 @@ $foreignBackupsTotal = array_sum(array_column($foreignBackups, 'size'));
 
     <?php endif; ?>
 
-    <p>
-        <?php esc_html_e('Create complete backups of your WordPress website including files, database and settings.', 'rebuzz-backup-and-restore'); ?>
-    </p>
+    <div class="wpcb-grid">
 
-    <hr>
+        <div class="wpcb-card">
+            <span class="wpcb-stat-label"><?php esc_html_e('Last backup', 'rebuzz-backup-and-restore'); ?></span>
+            <?php if ($latest) : ?>
+                <span class="wpcb-stat-value">
+                    <?php
+                    printf(
+                        /* translators: %s: how long ago, e.g. "2 hours" */
+                        esc_html__('%s ago', 'rebuzz-backup-and-restore'),
+                        esc_html(human_time_diff($latest['time']))
+                    );
+                    ?>
+                </span>
+                <span class="wpcb-stat-note"><?php echo esc_html($latest['date']); ?></span>
+            <?php else : ?>
+                <span class="wpcb-stat-value"><?php esc_html_e('Never', 'rebuzz-backup-and-restore'); ?></span>
+                <span class="wpcb-stat-note"><?php esc_html_e('Create your first backup below.', 'rebuzz-backup-and-restore'); ?></span>
+            <?php endif; ?>
+        </div>
 
-    <h2><?php esc_html_e('System Information', 'rebuzz-backup-and-restore'); ?></h2>
+        <div class="wpcb-card">
+            <span class="wpcb-stat-label"><?php esc_html_e('Stored backups', 'rebuzz-backup-and-restore'); ?></span>
+            <span class="wpcb-stat-value"><?php echo esc_html(number_format_i18n($backupCount)); ?></span>
+            <span class="wpcb-stat-note">
+                <?php
+                printf(
+                    /* translators: %s: total size of all backups, e.g. "1.2 GB" */
+                    esc_html__('%s in total', 'rebuzz-backup-and-restore'),
+                    esc_html(size_format($backupBytes))
+                );
+                ?>
+            </span>
+        </div>
 
-    <table class="widefat striped" style="max-width:750px;">
+        <div class="wpcb-card">
+            <span class="wpcb-stat-label"><?php esc_html_e('Backup folder', 'rebuzz-backup-and-restore'); ?></span>
+            <?php if ($storagePrivate) : ?>
+                <span class="wpcb-stat-value wpcb-badge wpcb-badge-ok">
+                    <span class="dashicons dashicons-lock" aria-hidden="true"></span>
+                    <?php esc_html_e('Private', 'rebuzz-backup-and-restore'); ?>
+                </span>
+            <?php else : ?>
+                <span class="wpcb-stat-value wpcb-badge wpcb-badge-bad">
+                    <span class="dashicons dashicons-warning" aria-hidden="true"></span>
+                    <?php esc_html_e('Not private', 'rebuzz-backup-and-restore'); ?>
+                </span>
+            <?php endif; ?>
+            <span class="wpcb-stat-note"><code><?php echo esc_html(wpcb_display_path(wpcb_backups_dir()) . '/'); ?></code></span>
+        </div>
 
-        <tbody>
-
-            <tr>
-                <th width="250"><?php esc_html_e('Plugin Version', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html(WPCB_VERSION); ?></td>
-            </tr>
-
-            <tr>
-                <th><?php esc_html_e('WordPress Version', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html(get_bloginfo('version')); ?></td>
-            </tr>
-
-            <tr>
-                <th><?php esc_html_e('PHP Version', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html(PHP_VERSION); ?></td>
-            </tr>
-
-            <tr>
-                <th><?php esc_html_e('Backup Directory', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html($backupDir); ?></td>
-            </tr>
-
-            <tr>
-                <th><?php esc_html_e('Total Backups', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html($backupCount); ?></td>
-            </tr>
-
-            <tr>
-                <th><?php esc_html_e('Latest Backup', 'rebuzz-backup-and-restore'); ?></th>
-                <td><?php echo esc_html($lastBackup); ?></td>
-            </tr>
-
-        </tbody>
-
-    </table>
-
-    <br>
-
-    <button
-        id="wpcb-create-backup"
-        class="button button-primary button-hero">
-        <?php esc_html_e('Create Backup', 'rebuzz-backup-and-restore'); ?>
-    </button>
-
-    <span
-        id="wpcb-loading"
-        style="display:none;margin-left:15px;">
-        <?php esc_html_e('Creating backup...', 'rebuzz-backup-and-restore'); ?>
-    </span>
-
-    <br><br>
-
-    <div
-        id="wpcb-progress"
-        style="
-            width:500px;
-            height:24px;
-            border:1px solid #ccc;
-            display:none;
-            background:#f1f1f1;
-        ">
-
-        <div
-            id="wpcb-progress-bar"
-            style="
-                width:0%;
-                height:100%;
-                background:#2271b1;
-                color:#fff;
-                text-align:center;
-                line-height:24px;
-                font-weight:bold;
-            ">
-            0%
+        <div class="wpcb-card">
+            <span class="wpcb-stat-label"><?php esc_html_e('Next backup', 'rebuzz-backup-and-restore'); ?></span>
+            <?php if ($nextRun) : ?>
+                <span class="wpcb-stat-value">
+                    <?php
+                    printf(
+                        /* translators: %s: time until the next backup, e.g. "5 hours" */
+                        esc_html__('In %s', 'rebuzz-backup-and-restore'),
+                        esc_html(human_time_diff(time(), $nextRun))
+                    );
+                    ?>
+                </span>
+                <span class="wpcb-stat-note">
+                    <?php echo esc_html($schedule['frequency'] === 'weekly' ? __('Weekly', 'rebuzz-backup-and-restore') : __('Daily', 'rebuzz-backup-and-restore')); ?>
+                    &middot; <?php echo esc_html(wp_date(get_option('date_format') . ' ' . get_option('time_format'), $nextRun)); ?>
+                </span>
+            <?php else : ?>
+                <span class="wpcb-stat-value"><?php esc_html_e('Not scheduled', 'rebuzz-backup-and-restore'); ?></span>
+                <span class="wpcb-stat-note"><a href="<?php echo esc_url(admin_url('admin.php?page=wpcb-schedule')); ?>"><?php esc_html_e('Set up automatic backups', 'rebuzz-backup-and-restore'); ?></a></span>
+            <?php endif; ?>
         </div>
 
     </div>
 
-    <br>
+    <?php include WPCB_PATH . 'admin/running.php'; ?>
 
-    <div id="wpcb-status"></div>
+    <div class="wpcb-card">
 
-    <?php if ($tempSize > 0) : ?>
+        <h2><?php esc_html_e('Create a backup', 'rebuzz-backup-and-restore'); ?></h2>
 
-        <hr>
+        <p><?php esc_html_e('Copies every file and the whole database into a single ZIP. It runs in small steps, so keep this page open until it finishes.', 'rebuzz-backup-and-restore'); ?></p>
 
-        <h2><?php esc_html_e('Temporary Files', 'rebuzz-backup-and-restore'); ?></h2>
+        <div class="wpcb-action">
 
-        <p>
+            <button
+                id="wpcb-create-backup"
+                class="button button-primary button-hero"
+                <?php disabled(!$storagePrivate || $backgroundRunning); ?>>
+                <?php esc_html_e('Create Backup', 'rebuzz-backup-and-restore'); ?>
+            </button>
+
+            <span id="wpcb-loading" class="wpcb-loading" style="display:none;">
+                <?php esc_html_e('Creating backup...', 'rebuzz-backup-and-restore'); ?>
+            </span>
+
+        </div>
+
+        <div id="wpcb-progress" class="wpcb-progress" style="display:none;">
+            <div id="wpcb-progress-bar" class="wpcb-progress-bar">0%</div>
+        </div>
+
+        <div id="wpcb-status" class="wpcb-status"></div>
+
+    </div>
+
+    <div class="wpcb-card">
+
+        <h2><?php esc_html_e('Your backups', 'rebuzz-backup-and-restore'); ?></h2>
+
+        <?php if (empty($backups)) : ?>
+
+            <p class="wpcb-empty"><?php esc_html_e('No backups yet. Backups you create, or ZIPs you upload to the backup folder, appear here.', 'rebuzz-backup-and-restore'); ?></p>
+
+        <?php else : ?>
+
+            <table class="widefat striped wpcb-backups">
+
+                <thead>
+                    <tr>
+                        <th><?php esc_html_e('Backup', 'rebuzz-backup-and-restore'); ?></th>
+                        <th class="wpcb-col-size"><?php esc_html_e('Size', 'rebuzz-backup-and-restore'); ?></th>
+                        <th class="wpcb-col-actions"><span class="screen-reader-text"><?php esc_html_e('Actions', 'rebuzz-backup-and-restore'); ?></span></th>
+                    </tr>
+                </thead>
+
+                <tbody>
+
+                <?php foreach ($backups as $backup) : ?>
+
+                    <?php
+                    $download_url = wp_nonce_url(
+                        admin_url(
+                            'admin-post.php?action=wpcb_download_backup&file=' .
+                            rawurlencode($backup['name'])
+                        ),
+                        'wpcb_download'
+                    );
+                    ?>
+
+                    <tr data-backup-row="<?php echo esc_attr($backup['name']); ?>">
+
+                        <td>
+                            <span class="wpcb-backup-date">
+                                <?php echo esc_html($backup['date']); ?>
+                                <?php if (in_array($backup['name'], $scheduledNames, true)) : ?>
+                                    <span class="wpcb-tag"><?php esc_html_e('Scheduled', 'rebuzz-backup-and-restore'); ?></span>
+                                <?php endif; ?>
+                            </span>
+                            <span class="wpcb-backup-file"><?php echo esc_html($backup['name']); ?></span>
+                        </td>
+
+                        <td class="wpcb-col-size"><?php echo esc_html($backup['size']); ?></td>
+
+                        <td class="wpcb-col-actions">
+
+                            <a
+                                class="button"
+                                href="<?php echo esc_url($download_url); ?>">
+                                <?php esc_html_e('Download', 'rebuzz-backup-and-restore'); ?>
+                            </a>
+
+                            <a
+                                class="button"
+                                href="<?php echo esc_url(
+                                    admin_url(
+                                        'admin.php?page=wpcb-restore&file=' .
+                                        rawurlencode($backup['name'])
+                                    )
+                                ); ?>">
+                                <?php esc_html_e('Restore', 'rebuzz-backup-and-restore'); ?>
+                            </a>
+
+                            <button
+                                class="button button-link-delete wpcb-delete-backup"
+                                data-file="<?php echo esc_attr($backup['name']); ?>">
+                                <?php esc_html_e('Delete', 'rebuzz-backup-and-restore'); ?>
+                            </button>
+
+                        </td>
+
+                    </tr>
+
+                <?php endforeach; ?>
+
+                </tbody>
+
+            </table>
+
+        <?php endif; ?>
+
+        <?php
+        /*
+         * Read from wpcb_backups_dir() rather than written out as a fixed
+         * string, so it stays correct on a site with a custom uploads
+         * location. An FTP drop-in is the only way to restore an archive
+         * too large for a browser upload, so the exact path belongs here.
+         */
+        ?>
+        <p class="wpcb-footnote">
             <?php
             printf(
                 wp_kses(
-                    /* translators: %s: current size of temporary files, e.g. "12 MB" */
-                    __("A backup or restore that didn't finish (hit a size/file-count limit, or was interrupted) can leave scratch files behind in a temporary folder. These aren't backups themselves and are safe to delete - currently using <strong>%s</strong>.", 'rebuzz-backup-and-restore'),
-                    ['strong' => []]
+                    /* translators: %s: path to the backups folder, relative to the WordPress root */
+                    __('Backups are kept in <code>%s</code> and downloaded through this screen, never by a public link. A backup ZIP copied into that folder over FTP shows up here too, at any size.', 'rebuzz-backup-and-restore'),
+                    ['code' => []]
                 ),
-                esc_html(size_format($tempSize))
+                esc_html(wpcb_display_path(wpcb_backups_dir()) . '/')
             );
             ?>
         </p>
 
-        <button
-            id="wpcb-clear-temp"
-            class="button button-secondary">
-            <?php esc_html_e('Clear Temporary Files', 'rebuzz-backup-and-restore'); ?>
-        </button>
+    </div>
 
-        <span id="wpcb-clear-temp-status" style="margin-left:10px;"></span>
+    <?php if ($tempSize > 0 || !empty($foreignBackups)) : ?>
 
-    <?php endif; ?>
+        <div class="wpcb-card">
 
-    <?php if (!empty($foreignBackups)) : ?>
+            <h2><?php esc_html_e('Free up space', 'rebuzz-backup-and-restore'); ?></h2>
 
-        <hr>
+            <?php if ($tempSize > 0) : ?>
 
-        <h2><?php esc_html_e("Other Backup Plugins' Data", 'rebuzz-backup-and-restore'); ?></h2>
-
-        <p>
-            <?php esc_html_e("This site has old backup data from another plugin still on disk. It isn't included in new backups made with this version, but the files themselves are still sitting there using space:", 'rebuzz-backup-and-restore'); ?>
-        </p>
-
-        <ul style="list-style:disc;margin-left:20px;">
-            <?php foreach ($foreignBackups as $folder) : ?>
-                <li>
-                    <strong><?php echo esc_html($folder['label']); ?></strong>
-                    &mdash; <?php echo esc_html(size_format($folder['size'])); ?>
-                </li>
-            <?php endforeach; ?>
-        </ul>
-
-        <button
-            id="wpcb-clear-foreign-backups"
-            class="button button-secondary">
-            <?php
-            printf(
-                /* translators: %s: total size of other plugins' leftover backup data, e.g. "12 MB" */
-                esc_html__("Clear Other Plugins' Backup Data (%s)", 'rebuzz-backup-and-restore'),
-                esc_html(size_format($foreignBackupsTotal))
-            );
-            ?>
-        </button>
-
-        <span id="wpcb-clear-foreign-backups-status" style="margin-left:10px;"></span>
-
-    <?php endif; ?>
-
-    <hr>
-
-    <h2><?php esc_html_e('Backup History', 'rebuzz-backup-and-restore'); ?></h2>
-
-    <p>
-        <?php
-        printf(
-            wp_kses(
-                /* translators: %s: link to the Restore page, with "Restore" as the link text */
-                __('To restore any backup below, or to upload a backup ZIP from elsewhere, use the %s page.', 'rebuzz-backup-and-restore'),
-                ['a' => ['href' => []]]
-            ),
-            '<a href="' . esc_url(admin_url('admin.php?page=wpcb-restore')) . '">' . esc_html__('Restore', 'rebuzz-backup-and-restore') . '</a>'
-        );
-        ?>
-    </p>
-
-    <?php if (empty($backups)) : ?>
-
-        <p><?php esc_html_e('No backups available.', 'rebuzz-backup-and-restore'); ?></p>
-
-    <?php else : ?>
-
-        <table class="widefat striped">
-
-            <thead>
-
-                <tr>
-                    <th><?php esc_html_e('Backup File', 'rebuzz-backup-and-restore'); ?></th>
-                    <th><?php esc_html_e('Size', 'rebuzz-backup-and-restore'); ?></th>
-                    <th><?php esc_html_e('Date', 'rebuzz-backup-and-restore'); ?></th>
-                    <th width="260"><?php esc_html_e('Actions', 'rebuzz-backup-and-restore'); ?></th>
-                </tr>
-
-            </thead>
-
-            <tbody>
-
-            <?php foreach ($backups as $backup) : ?>
-
-                <tr data-backup-row="<?php echo esc_attr($backup['name']); ?>">
-
-                    <td><?php echo esc_html($backup['name']); ?></td>
-
-                    <td><?php echo esc_html($backup['size']); ?></td>
-
-                    <td><?php echo esc_html($backup['date']); ?></td>
-
-                    <td>
-
+                <div class="wpcb-tidy-row">
+                    <p>
                         <?php
-
-                        $download_url = wp_nonce_url(
-                            admin_url(
-                                'admin-post.php?action=wpcb_download_backup&file=' .
-                                rawurlencode($backup['name'])
+                        printf(
+                            wp_kses(
+                                /* translators: %s: current size of temporary files, e.g. "12 MB" */
+                                __('<strong>%s of temporary files</strong> were left by a backup or restore that didn\'t finish. They aren\'t backups and are safe to delete.', 'rebuzz-backup-and-restore'),
+                                ['strong' => []]
                             ),
-                            'wpcb_download'
+                            esc_html(size_format($tempSize))
                         );
-
                         ?>
+                        <span id="wpcb-clear-temp-status" class="wpcb-tidy-status"></span>
+                    </p>
+                    <button id="wpcb-clear-temp" class="button">
+                        <?php esc_html_e('Clear Temporary Files', 'rebuzz-backup-and-restore'); ?>
+                    </button>
+                </div>
 
-                        <a
-                            class="button button-secondary"
-                            href="<?php echo esc_url($download_url); ?>">
-                            <?php esc_html_e('Download', 'rebuzz-backup-and-restore'); ?>
-                        </a>
+            <?php endif; ?>
 
-                        <a
-                            class="button"
-                            href="<?php echo esc_url(
-                                admin_url(
-                                    'admin.php?page=wpcb-restore&file=' .
-                                    rawurlencode($backup['name'])
-                                )
-                            ); ?>">
-                            <?php esc_html_e('Restore', 'rebuzz-backup-and-restore'); ?>
-                        </a>
+            <?php if (!empty($foreignBackups)) : ?>
 
-                        <button
-                            class="button wpcb-delete-backup"
-                            data-file="<?php echo esc_attr($backup['name']); ?>">
-                            <?php esc_html_e('Delete', 'rebuzz-backup-and-restore'); ?>
-                        </button>
+                <div class="wpcb-tidy-row">
+                    <div>
+                        <p><?php esc_html_e("Old backups from other backup plugins are still on disk. New backups leave them out, but they still take up space:", 'rebuzz-backup-and-restore'); ?></p>
+                        <ul>
+                            <?php foreach ($foreignBackups as $folder) : ?>
+                                <li>
+                                    <strong><?php echo esc_html($folder['label']); ?></strong>
+                                    &mdash; <?php echo esc_html(size_format($folder['size'])); ?>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                        <span id="wpcb-clear-foreign-backups-status" class="wpcb-tidy-status"></span>
+                    </div>
+                    <button id="wpcb-clear-foreign-backups" class="button">
+                        <?php
+                        printf(
+                            /* translators: %s: total size of other plugins' leftover backup data, e.g. "12 MB" */
+                            esc_html__("Clear Other Plugins' Backup Data (%s)", 'rebuzz-backup-and-restore'),
+                            esc_html(size_format($foreignBackupsTotal))
+                        );
+                        ?>
+                    </button>
+                </div>
 
-                    </td>
+            <?php endif; ?>
 
-                </tr>
-
-            <?php endforeach; ?>
-
-            </tbody>
-
-        </table>
+        </div>
 
     <?php endif; ?>
-
-    <?php
-    /*
-     * Read from wpcb_backups_dir() rather than written out as a fixed
-     * string, so it stays correct on a site with a custom uploads
-     * location. An FTP drop-in is the only way to restore an archive
-     * too large for a browser upload, so the exact path belongs here.
-     */
-    ?>
-    <p class="description" style="margin-top:12px;">
-        <?php
-        printf(
-            wp_kses(
-                /* translators: %s: path to the backups folder, relative to the WordPress root */
-                __('Backups are stored in <code>%s</code>. Drop a backup ZIP there over FTP and it appears in the list above, with no upload size limit. Archives are only ever written to a location this plugin has confirmed is not reachable over the web, and are downloaded through this admin screen rather than by URL.', 'rebuzz-backup-and-restore'),
-                ['code' => []]
-            ),
-            esc_html(wpcb_display_path(wpcb_backups_dir()) . '/')
-        );
-        ?>
-    </p>
 
 </div>

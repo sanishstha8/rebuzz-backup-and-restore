@@ -1,12 +1,425 @@
-#wpcb-progress{
-    width:100%;
-    background:#ddd;
-    padding:12px;
-    font-size:16px;
-    margin-top:20px;
+/* ReBuzz Backup and Restore - admin screens. WordPress-native look: its colours, buttons and notices, laid out in cards. */
+
+.wpcb-wrap {
+    --wpcb-accent: var(--wp-admin-theme-color, #2271b1);
+    --wpcb-border: #dcdcde;
+    --wpcb-muted: #646970;
+    --wpcb-ok: #008a20;
+    --wpcb-bad: #d63638;
+    max-width: 1100px;
 }
 
-.card{
-    max-width:900px;
-    padding:20px;
+/* Header and tabs */
+
+.wpcb-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0 14px;
+}
+
+.wpcb-header img {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+}
+
+.wpcb-wrap .wpcb-header h1 {
+    margin: 0;
+    padding: 0;
+    font-size: 23px;
+    line-height: 1.3;
+}
+
+.wpcb-version {
+    font-size: 12px;
+    color: var(--wpcb-muted);
+    background: #f0f0f1;
+    border: 1px solid var(--wpcb-border);
+    border-radius: 999px;
+    padding: 1px 9px;
+}
+
+.wpcb-wrap .nav-tab-wrapper {
+    margin-bottom: 20px;
+}
+
+/* WordPress moves notices to just after the first h1/h2; this keeps them under the tabs instead. */
+.wpcb-wrap .wp-header-end {
+    display: none;
+}
+
+/* Cards */
+
+.wpcb-card {
+    background: #fff;
+    border: 1px solid var(--wpcb-border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 0 0 20px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+}
+
+.wpcb-card > h2 {
+    margin: 0 0 6px;
+    font-size: 16px;
+}
+
+.wpcb-card > h2 + p,
+.wpcb-card .wpcb-lead {
+    margin-top: 0;
+    color: var(--wpcb-muted);
+}
+
+.wpcb-card .widefat {
+    border-radius: 6px;
+}
+
+.wpcb-grid {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    margin-bottom: 20px;
+}
+
+.wpcb-grid-2 {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.wpcb-grid > .wpcb-card {
+    margin: 0;
+}
+
+/* Summary tiles */
+
+.wpcb-stat-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+    color: var(--wpcb-muted);
+    margin-bottom: 6px;
+}
+
+.wpcb-stat-value {
+    display: block;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: #1d2327;
+}
+
+.wpcb-stat-note {
+    display: block;
+    margin-top: 4px;
+    color: var(--wpcb-muted);
+    word-break: break-word;
+}
+
+.wpcb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.wpcb-badge .dashicons {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+}
+
+.wpcb-badge-ok {
+    color: var(--wpcb-ok);
+}
+
+.wpcb-badge-bad {
+    color: var(--wpcb-bad);
+}
+
+.wpcb-badge-warn {
+    color: #996800;
+}
+
+.wpcb-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    vertical-align: middle;
+    color: var(--wpcb-accent);
+    background: #f0f6fc;
+    border: 1px solid #c5d9ed;
+    border-radius: 999px;
+}
+
+.wpcb-running {
+    border-left: 4px solid var(--wpcb-accent);
+}
+
+.wpcb-running .wpcb-progress {
+    margin-top: 4px;
+}
+
+.wpcb-inline-status {
+    margin: 8px 0 0;
+    color: var(--wpcb-ok);
+}
+
+.wpcb-inline-status:empty {
+    display: none;
+}
+
+.wpcb-inline-status.is-error,
+.wpcb-loading.is-error {
+    color: var(--wpcb-bad);
+}
+
+/* Create backup / restore action area */
+
+.wpcb-action {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+}
+
+.wpcb-action .button-hero {
+    margin: 0;
+}
+
+.wpcb-loading {
+    color: var(--wpcb-muted);
+}
+
+.wpcb-progress {
+    max-width: 560px;
+    height: 26px;
+    margin-top: 16px;
+    background: #f0f0f1;
+    border: 1px solid var(--wpcb-border);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.wpcb-progress-bar {
+    width: 0;
+    height: 100%;
+    min-width: 44px;
+    background: var(--wpcb-accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+    line-height: 26px;
+    text-align: center;
+    border-radius: 999px;
+    transition: width .3s ease;
+}
+
+.wpcb-status .notice {
+    margin: 16px 0 0;
+}
+
+/* Backup lists */
+
+.wpcb-backups td {
+    vertical-align: middle;
+}
+
+.wpcb-backup-date {
+    display: block;
+    font-weight: 600;
+    color: #1d2327;
+}
+
+.wpcb-backup-file {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--wpcb-muted);
+    word-break: break-all;
+}
+
+.wpcb-backups .wpcb-col-size {
+    width: 110px;
+    white-space: nowrap;
+}
+
+.wpcb-backups .wpcb-col-actions {
+    width: 290px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.wpcb-backups .wpcb-col-actions .button {
+    margin-left: 4px;
+}
+
+.wpcb-backups .wpcb-col-choose {
+    width: 1%;
+    text-align: right;
+}
+
+.wpcb-backups .button-link-delete {
+    color: var(--wpcb-bad);
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.wpcb-backups .button-link-delete:hover,
+.wpcb-backups .button-link-delete:focus {
+    color: #a00;
+    border-color: var(--wpcb-bad);
+    background: #fff;
+}
+
+.wpcb-empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--wpcb-muted);
+    background: #f6f7f7;
+    border: 1px dashed var(--wpcb-border);
+    border-radius: 6px;
+}
+
+.wpcb-footnote {
+    margin: 14px 0 0;
+    color: var(--wpcb-muted);
+}
+
+/* Housekeeping rows */
+
+.wpcb-tidy-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 0;
+    border-top: 1px solid #f0f0f1;
+}
+
+.wpcb-tidy-row:first-of-type {
+    border-top: 0;
+    padding-top: 4px;
+}
+
+.wpcb-tidy-row p {
+    margin: 0;
+}
+
+.wpcb-tidy-row ul {
+    margin: 6px 0 0 18px;
+    list-style: disc;
+}
+
+.wpcb-tidy-row .button {
+    flex-shrink: 0;
+}
+
+.wpcb-tidy-status {
+    margin-left: 8px;
+    color: var(--wpcb-ok);
+}
+
+/* Restore */
+
+.wpcb-back {
+    display: inline-block;
+    margin-bottom: 12px;
+    text-decoration: none;
+}
+
+.wpcb-details th {
+    width: 200px;
+}
+
+.wpcb-upload-form {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.wpcb-option {
+    margin: 18px 0 6px;
+}
+
+.wpcb-option + .description {
+    max-width: 680px;
+    margin-bottom: 20px;
+}
+
+/* Settings */
+
+.wpcb-card .form-table {
+    margin-top: 0;
+}
+
+.wpcb-card .form-table th {
+    padding-left: 0;
+}
+
+.wpcb-card .submit {
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+@media screen and (max-width: 782px) {
+    .wpcb-card {
+        padding: 16px;
+    }
+
+    .wpcb-tidy-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    /* Each backup becomes a stacked block, so the name gets the full width. */
+    .wpcb-backups thead {
+        display: none;
+    }
+
+    .wpcb-backups,
+    .wpcb-backups tbody,
+    .wpcb-backups tr,
+    .wpcb-backups td {
+        display: block;
+        width: auto;
+    }
+
+    .wpcb-backups tr {
+        padding: 12px 14px;
+        border-top: 1px solid #f0f0f1;
+    }
+
+    .wpcb-backups tr:first-child {
+        border-top: 0;
+    }
+
+    .wpcb-backups td {
+        padding: 2px 0;
+    }
+
+    .wpcb-backups .wpcb-col-size {
+        width: auto;
+        color: var(--wpcb-muted);
+    }
+
+    .wpcb-backups .wpcb-col-actions,
+    .wpcb-backups .wpcb-col-choose {
+        width: auto;
+        padding-top: 8px;
+        text-align: left;
+        white-space: normal;
+    }
+
+    .wpcb-backups .wpcb-col-actions .button {
+        margin: 4px 4px 0 0;
+    }
 }

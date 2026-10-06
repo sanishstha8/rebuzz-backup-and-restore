@@ -90,7 +90,8 @@ class WPCB_Url_Rewriter
             $table = $tables[$tableIndex];
 
             $keyColumns = $this->primaryKeyColumns($wpdb, $table);
-            $textColumns = $this->textColumns($wpdb, $table);
+            $textTypes = $this->textColumns($wpdb, $table);
+            $textColumns = array_keys($textTypes);
 
             if (empty($keyColumns) || empty($textColumns)) {
 
@@ -114,12 +115,29 @@ class WPCB_Url_Rewriter
             $orderBy = implode(',', array_map([$this, 'quoteIdentifier'], $keyColumns));
 
             if ($batchRows <= 0) {
-                $batchRows = wpcb_initial_batch_rows($table, self::BATCH_TARGET_BYTES, self::ROWS_PER_BATCH);
+                $batchRows = wpcb_initial_batch_rows(self::ROWS_PER_BATCH);
             }
 
             $requested = $batchRows;
+            $rows = null;
 
-            $rows = $this->fetchNextRows($wpdb, $table, $columnList, $keyColumns, $orderBy, $lastKey, $requested);
+            // Size the batch from the next rows' real sizes; see wpcb_has_large_columns().
+            $probe = wpcb_has_large_columns($textTypes);
+
+            if ($probe) {
+
+                $sizes = $this->fetchNextRows($wpdb, $table, wpcb_length_select($textColumns), $keyColumns, $orderBy, $lastKey, self::ROWS_PER_BATCH);
+
+                if ($sizes === false || empty($sizes)) {
+                    $rows = $sizes;
+                } else {
+                    $requested = wpcb_rows_within_bytes(array_column($sizes, 'wpcb_len'), self::BATCH_TARGET_BYTES);
+                }
+            }
+
+            if ($rows === null) {
+                $rows = $this->fetchNextRows($wpdb, $table, $columnList, $keyColumns, $orderBy, $lastKey, $requested);
+            }
 
             if ($rows === false) {
 
@@ -226,7 +244,7 @@ class WPCB_Url_Rewriter
 
             unset($rows, $lastRow);
 
-            $batchRows = wpcb_adapt_batch_rows($requested, $batchBytes, self::BATCH_TARGET_BYTES, self::ROWS_PER_BATCH);
+            $batchRows = $probe ? $requested : wpcb_adapt_batch_rows($requested, $batchBytes, self::BATCH_TARGET_BYTES, self::ROWS_PER_BATCH);
 
             if ($fetched < $requested) {
                 $tableIndex++;
@@ -504,10 +522,11 @@ class WPCB_Url_Rewriter
             );
 
             if ($isText) {
-                $textColumns[] = $column['Field'];
+                $textColumns[$column['Field']] = $type;
             }
         }
 
+        // Field => type, so run() can tell which can hold large values.
         return $textColumns;
     }
 

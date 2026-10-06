@@ -22,6 +22,9 @@ class WPCB_Admin
      */
     private $pageHooks = [];
 
+    /** Set when this request's Permalinks page load rebuilt the rules after a restore. */
+    private $permalinksRebuilt = false;
+
     /**
      * Bytes read per iteration when streaming an archive to the browser
      * - see download_backup(). Large enough that the per-read overhead
@@ -33,6 +36,7 @@ class WPCB_Admin
     public function __construct()
     {
         add_action('admin_menu', [$this, 'menu']);
+        add_action('admin_head', [$this, 'hide_tab_submenus']);
 
     
         add_action('admin_init', [$this, 'register_settings']);
@@ -63,6 +67,16 @@ class WPCB_Admin
         // shown on any admin screen, and deleted only when asked.
         add_action('admin_notices', [$this, 'old_directories_notice']);
         add_action('admin_post_wpcb_delete_old_directories', [$this, 'delete_old_directories']);
+
+        // Schedule tab: run now, progress of a background backup, test email.
+        add_action('wp_ajax_wpcb_run_schedule_now', [$this, 'run_schedule_now']);
+        add_action('wp_ajax_wpcb_background_status', [$this, 'background_status']);
+        add_action('wp_ajax_wpcb_test_email', [$this, 'test_email']);
+
+        // Reminder after a restore, until Permalink Settings is opened or the notice is dismissed.
+        add_action('admin_notices', [$this, 'permalink_notice']);
+        add_action('load-options-permalink.php', [$this, 'permalinks_visited']);
+        add_action('admin_post_wpcb_dismiss_permalink_notice', [$this, 'dismiss_permalink_notice']);
     }
 
     /** Admin menu */
@@ -80,8 +94,8 @@ class WPCB_Admin
 
         $this->pageHooks[] = add_submenu_page(
             'wpcb-dashboard',
-            __('Dashboard', 'rebuzz-backup-and-restore'),
-            __('Dashboard', 'rebuzz-backup-and-restore'),
+            __('Backups', 'rebuzz-backup-and-restore'),
+            __('Backups', 'rebuzz-backup-and-restore'),
             'manage_options',
             'wpcb-dashboard',
             [$this, 'dashboard']
@@ -98,12 +112,33 @@ class WPCB_Admin
 
         $this->pageHooks[] = add_submenu_page(
             'wpcb-dashboard',
+            __('Schedule', 'rebuzz-backup-and-restore'),
+            __('Schedule', 'rebuzz-backup-and-restore'),
+            'manage_options',
+            'wpcb-schedule',
+            [$this, 'schedule']
+        );
+
+        $this->pageHooks[] = add_submenu_page(
+            'wpcb-dashboard',
             __('Settings', 'rebuzz-backup-and-restore'),
             __('Settings', 'rebuzz-backup-and-restore'),
             'manage_options',
             'wpcb-settings',
             [$this, 'settings']
         );
+    }
+
+    /**
+     * The pages are tabs now, so the menu shows one item. Runs on
+     * admin_head: by then WordPress has resolved the page, its title and
+     * access from the submenu, and the menu hasn't been drawn yet.
+     */
+    public function hide_tab_submenus()
+    {
+        foreach (['wpcb-dashboard', 'wpcb-restore', 'wpcb-schedule', 'wpcb-settings'] as $slug) {
+            remove_submenu_page('wpcb-dashboard', $slug);
+        }
     }
 
     /**
@@ -148,6 +183,15 @@ class WPCB_Admin
                 'default' => ['include_core' => true],
             ]
         );
+
+        register_setting(
+            'wpcb_schedule_group',
+            WPCB_Scheduler::OPTION,
+            [
+                'type' => 'array',
+                'sanitize_callback' => ['WPCB_Scheduler', 'sanitize'],
+            ]
+        );
     }
 
     /** Sanitize the settings form's submitted value before it's saved. */
@@ -187,7 +231,17 @@ class WPCB_Admin
             'wpcb',
             [
                 'ajax_url' => admin_url('admin-ajax.php'),
-                'nonce'    => wp_create_nonce('wpcb_backup')
+                'nonce'    => wp_create_nonce('wpcb_backup'),
+                'permalinks_url' => admin_url('options-permalink.php'),
+                'i18n' => [
+                    'no_backups' => __('No backups yet. Backups you create, or ZIPs you upload to the backup folder, appear here.', 'rebuzz-backup-and-restore'),
+                    'permalinks' => __('One last step: open Permalink Settings. Opening that page rebuilds the link rules your plugins add, so no page shows "Page not found". You don\'t need to change anything there.', 'rebuzz-backup-and-restore'),
+                    'permalinks_button' => __('Open Permalink Settings', 'rebuzz-backup-and-restore'),
+                    'starting' => __('Starting...', 'rebuzz-backup-and-restore'),
+                    'sending' => __('Sending...', 'rebuzz-backup-and-restore'),
+                    'no_server' => __('Unable to contact server.', 'rebuzz-backup-and-restore'),
+                    'bg_done' => __('Finished. Refreshing...', 'rebuzz-backup-and-restore'),
+                ],
             ]
         );
     }
@@ -202,6 +256,77 @@ class WPCB_Admin
     public function settings()
     {
         include WPCB_PATH . 'admin/settings.php';
+    }
+
+    /** Schedule page */
+    public function schedule()
+    {
+        include WPCB_PATH . 'admin/schedule.php';
+    }
+
+    /** Starts a scheduled-style backup now: in the background, with the schedule's keep and email settings. */
+    public function run_schedule_now()
+    {
+        check_ajax_referer('wpcb_backup', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
+        }
+
+        $started = WPCB_Scheduler::start(get_current_user_id());
+
+        if ($started !== true) {
+            wp_send_json_error($started);
+        }
+
+        wp_send_json_success();
+    }
+
+    /** Progress of the scheduled backup running now, for the page to show. */
+    public function background_status()
+    {
+        check_ajax_referer('wpcb_backup', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
+        }
+
+        $job = WPCB_Scheduler::runningJob();
+
+        wp_send_json_success($job ? $job->getPublic() : ['status' => 'idle']);
+    }
+
+    /** Sends a test email to the addresses typed on the Schedule tab. */
+    public function test_email()
+    {
+        check_ajax_referer('wpcb_backup', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
+        }
+
+        $to = WPCB_Scheduler::sanitizeEmails(wp_unslash($_POST['email'] ?? ''));
+
+        if ($to === '') {
+            wp_send_json_error(__('Enter at least one valid email address first.', 'rebuzz-backup-and-restore'));
+        }
+
+        $site = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
+
+        $sent = wp_mail(
+            $to,
+            /* translators: %s: site name */
+            sprintf(__('[%s] Test email from ReBuzz Backup', 'rebuzz-backup-and-restore'), $site),
+            /* translators: %s: site address */
+            sprintf(__('This is a test from ReBuzz Backup and Restore on %s. Backup notices will arrive at this address.', 'rebuzz-backup-and-restore'), home_url())
+        );
+
+        if (!$sent) {
+            wp_send_json_error(__('WordPress could not send the email. Many hosts need an SMTP plugin before WordPress can send mail.', 'rebuzz-backup-and-restore'));
+        }
+
+        /* translators: %s: email addresses */
+        wp_send_json_success(sprintf(__('Sent to %s. If it doesn\'t arrive within a few minutes, check the spam folder.', 'rebuzz-backup-and-restore'), $to));
     }
 
     public function download_backup()
@@ -257,9 +382,10 @@ class WPCB_Admin
      * A ZIP is already compressed, so gzipping it again costs CPU for
      * nothing - and it silently invalidates the Content-Length below,
      * which is what browsers use to show progress and to notice a short
-     * download. Only touched when a host has actually turned it on.
+     * download. Only touched when a host has actually turned it on, and
+     * only if ini_set() isn't disabled - PHP 8 would fatal despite "@".
      */
-    if (ini_get('zlib.output_compression')) {
+    if (ini_get('zlib.output_compression') && function_exists('ini_set')) {
         // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- per-request output setting on a request that exits immediately; see above.
         @ini_set('zlib.output_compression', 'Off');
     }
@@ -377,7 +503,8 @@ public function clear_temp()
         wp_send_json_error(__('Permission denied.', 'rebuzz-backup-and-restore'));
     }
 
-    $freed = wpcb_clear_directory(wpcb_temp_dir());
+    // Guard files stay: temp/ holds database dumps mid-backup.
+    $freed = wpcb_clear_directory(wpcb_temp_dir(), wpcb_guard_files());
 
     // Restore workspaces live as siblings of temp/, not inside it - see
     // wpcb_clear_stale_restore_workspaces(). Swept here too so this is
@@ -514,9 +641,9 @@ public function backup_step()
 
     $backup = new WPCB_Backup_Job($job);
 
-    $this->guardAgainstFatalError($job, 'backup');
+    self::guardAgainstFatalError($job, 'backup');
 
-    $this->runStepBuffered(function () use ($backup) {
+    self::runStepBuffered(function () use ($backup) {
         return $backup->processNextStep();
     }, 'backup');
 
@@ -875,6 +1002,9 @@ public function start_restore()
         ));
     }
 
+    // And the staged/replaced core folders one may have left in the WordPress root.
+    WPCB_Core_Swap::removeLeftovers();
+
     $space = wpcb_check_restore_disk_space($zip);
 
     if (!$space['ok']) {
@@ -1016,9 +1146,9 @@ public function restore_step()
 
     $restore = new WPCB_Restore_Job($job);
 
-    $this->guardAgainstFatalError($job, 'restore');
+    self::guardAgainstFatalError($job, 'restore');
 
-    $this->runStepBuffered(function () use ($restore) {
+    self::runStepBuffered(function () use ($restore) {
         return $restore->processNextStep();
     }, 'restore');
 
@@ -1044,7 +1174,7 @@ public function restore_step()
  * @param callable $step  Does the work; return value is passed through.
  * @param string   $kind  'backup' or 'restore', for the log entry.
  */
-private function runStepBuffered(callable $step, $kind)
+public static function runStepBuffered(callable $step, $kind)
 {
     ob_start();
 
@@ -1081,7 +1211,7 @@ private function runStepBuffered(callable $step, $kind)
  * it can discard the partial output above that depth without tearing
  * down buffers core or another plugin opened underneath it.
  */
-private function guardAgainstFatalError(WPCB_Job $job, $kind)
+public static function guardAgainstFatalError(WPCB_Job $job, $kind)
 {
     /*
      * No ini_set('display_errors') here either - see the note at the
@@ -1107,78 +1237,16 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
             return;
         }
 
-        // A fatal inside wpdb (e.g. out of memory fetching a huge row)
-        // leaves its result half-read, and every query below would fail
-        // with "Commands out of sync" - the job would stay "running".
-        wpcb_recover_db_connection();
-
-        // Crash skipped the normal clearProcessing(); do it here or
-        // retries get rejected as "already running" for up to 90s.
-        $job->clearProcessing();
-
         $message = sprintf(
             /* translators: 1: "backup" or "restore", 2: PHP error message, 3: line number, 4: file name */
-            __('The %1$s step crashed (%2$s at line %3$d of %4$s). This usually means a PHP execution time or memory limit was hit while processing this step - check your host\'s PHP error log for the full trace, and consider raising max_execution_time or memory_limit.', 'rebuzz-backup-and-restore'),
+            __('The %1$s step crashed (%2$s at line %3$d of %4$s).', 'rebuzz-backup-and-restore'),
             $kind,
             $error['message'],
             $error['line'],
             basename($error['file'])
-        );
+        ) . ' ' . wpcb_fatal_error_hint($error['message']);
 
-        // Log the crash too, not just browser/job state, so the
-        // cause survives after the on-screen message is gone.
-        if (class_exists('WPCB_Logger')) {
-
-            $logger = new WPCB_Logger($kind);
-            $logger->log('CRASH: ' . $message);
-        }
-
-        $job->update([
-            'status' => 'failed',
-            'message' => $message
-        ]);
-
-        /*
-         * A crash bypasses fail(), so do its cleanup here: plugins back
-         * on, mu-plugins renamed back, moved-aside folders returned,
-         * staging tables dropped and the lock released. Otherwise a
-         * mid-restore crash leaves every plugin deactivated and blocks
-         * all future restores.
-         */
-        if ($kind === 'restore') {
-
-            try {
-
-                (new WPCB_Restore_Job($job))->cleanupAfterFailure();
-
-            } catch (\Throwable $e) {
-
-                if (function_exists('wpcb_restore_lock_release')) {
-                    wpcb_restore_lock_release();
-                }
-            }
-
-            // Belt-and-braces for the mu-plugins: they commonly carry
-            // security-critical code. Runs after the lock is released so
-            // it doesn't see this job as an active restore.
-            if (function_exists('wpcb_recover_disabled_mu_plugins')) {
-                wpcb_recover_disabled_mu_plugins();
-            }
-        }
-
-        // Same for a backup: fail() would free the lock and the temp files.
-        if ($kind === 'backup') {
-
-            $state = $job->get();
-
-            if (!empty($state['workspace'])) {
-                (new WPCB_Workspace($state['workspace']))->cleanup();
-            }
-
-            if (function_exists('wpcb_backup_lock_release')) {
-                wpcb_backup_lock_release();
-            }
-        }
+        self::recordCrash($job, $kind, $message);
 
         // Discard whatever partial output this request produced, so
         // only clean JSON goes out - but only down to the depth the
@@ -1198,6 +1266,206 @@ private function guardAgainstFatalError(WPCB_Job $job, $kind)
             'data' => $message
         ]);
     });
+}
+
+/**
+ * Mark a crashed job failed and do what its fail() would have done.
+ * Shared by the step guard above and the bootstrap fallback in
+ * rebuzz-backup-and-restore.php.
+ *
+ * @param string $kind 'backup' or 'restore'.
+ */
+public static function recordCrash(WPCB_Job $job, $kind, $message)
+{
+    // A fatal inside wpdb (e.g. out of memory fetching a huge row)
+    // leaves its result half-read, and every query below would fail
+    // with "Commands out of sync" - the job would stay "running".
+    wpcb_recover_db_connection();
+
+    // Crash skipped the normal clearProcessing(); do it here or
+    // retries get rejected as "already running" for up to 90s.
+    $job->clearProcessing();
+
+    // Log the crash too, not just browser/job state, so the
+    // cause survives after the on-screen message is gone.
+    (new WPCB_Logger($kind))->log('CRASH: ' . $message);
+
+    $job->update([
+        'status' => 'failed',
+        'message' => $message
+    ]);
+
+    /*
+     * A crash bypasses fail(), so do its cleanup here: plugins back
+     * on, mu-plugins renamed back, moved-aside folders returned,
+     * staging tables dropped and the lock released. Otherwise a
+     * mid-restore crash leaves every plugin deactivated and blocks
+     * all future restores.
+     */
+    if ($kind === 'restore') {
+
+        try {
+
+            (new WPCB_Restore_Job($job))->cleanupAfterFailure();
+
+        } catch (\Throwable $e) {
+
+            wpcb_restore_lock_release();
+        }
+
+        // Belt-and-braces for the mu-plugins: they commonly carry
+        // security-critical code. Runs after the lock is released so
+        // it doesn't see this job as an active restore.
+        wpcb_recover_disabled_mu_plugins();
+    }
+
+    // Same for a backup: fail() would free the lock and the temp files.
+    if ($kind === 'backup') {
+
+        $state = $job->get();
+
+        if (!empty($state['workspace'])) {
+            (new WPCB_Workspace($state['workspace']))->cleanup();
+        }
+
+        wpcb_backup_lock_release();
+    }
+}
+
+/**
+ * The job a fatal-crashed request of $action was driving, if the
+ * request may act on it: one whose lock this request claimed, or one
+ * named by job_id that the logged-in, nonce-checked owner is polling.
+ * For the bootstrap fallback, which can run before WordPress has
+ * checked anything - hence loading pluggable.php itself.
+ *
+ * @return array{0: WPCB_Job, 1: string}|null Job and 'backup'/'restore'.
+ */
+public static function crashedRequestJob($action)
+{
+    $kinds = [
+        'wpcb_start_backup'      => 'backup',
+        'wpcb_backup_step'       => 'backup',
+        'wpcb_run_schedule_now'  => 'backup',
+        'wpcb_background_step'   => 'backup',
+        'wpcb_start_restore'     => 'restore',
+        'wpcb_restore_step'      => 'restore',
+    ];
+
+    if (!isset($kinds[$action])) {
+        return null;
+    }
+
+    $kind = $kinds[$action];
+
+    // Claimed by this request after the start handler's own nonce and capability checks.
+    $claimed = $GLOBALS['wpcb_lock_claimed'][$kind] ?? '';
+
+    if ($claimed !== '') {
+        return [new WPCB_Job($claimed), $kind];
+    }
+
+    // A scheduled backup's step request: logged out, identified by its job's token instead.
+    if ($action === 'wpcb_background_step') {
+        $job = class_exists('WPCB_Scheduler') ? WPCB_Scheduler::jobFromRequest() : null;
+
+        return $job !== null && ($job->get()['status'] ?? '') === 'running' ? [$job, $kind] : null;
+    }
+
+    // phpcs:disable WordPress.Security.NonceVerification.Missing -- verified below.
+    $jobId = isset($_POST['job_id']) && is_scalar($_POST['job_id']) ? sanitize_text_field(wp_unslash($_POST['job_id'])) : '';
+    $nonce = isset($_POST['nonce']) && is_scalar($_POST['nonce']) ? sanitize_text_field(wp_unslash($_POST['nonce'])) : '';
+    // phpcs:enable WordPress.Security.NonceVerification.Missing
+
+    if ($jobId === '' || $nonce === '') {
+        return null;
+    }
+
+    // Plugins load before pluggable.php, and a half-restored plugin is the usual crash.
+    if (!function_exists('wp_verify_nonce') || !function_exists('wp_get_current_user')) {
+        require_once ABSPATH . WPINC . '/pluggable.php';
+    }
+
+    if (!current_user_can('manage_options') || !wp_verify_nonce($nonce, 'wpcb_backup')) {
+        return null;
+    }
+
+    $job = new WPCB_Job($jobId);
+
+    if (!$job->isOwnedBy(get_current_user_id()) || ($job->get()['status'] ?? '') !== 'running') {
+        return null;
+    }
+
+    return [$job, $kind];
+}
+
+/**
+ * After a restore: the rewrite rules were rebuilt before the restored
+ * plugins loaded, so ones they add (shop, forms, custom post types) can
+ * 404 until the Permalinks page is opened once.
+ */
+public function permalink_notice()
+{
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+
+    if ($this->permalinksRebuilt) {
+        echo '<div class="notice notice-success is-dismissible"><p>' .
+            esc_html__('Link rules rebuilt after your restore. Nothing else to do.', 'rebuzz-backup-and-restore') .
+            '</p></div>';
+        return;
+    }
+
+    if (!wpcb_permalink_resave_pending()) {
+        return;
+    }
+
+    $dismissUrl = wp_nonce_url(
+        admin_url('admin-post.php?action=wpcb_dismiss_permalink_notice'),
+        'wpcb_dismiss_permalink_notice'
+    );
+
+    ?>
+    <div class="notice notice-info">
+        <p>
+            <strong><?php esc_html_e('Your site was restored. One last step: open Permalink Settings.', 'rebuzz-backup-and-restore'); ?></strong>
+            <?php esc_html_e('Opening that page rebuilds the link rules your plugins add, so shop, product and other plugin pages don\'t show "Page not found". You don\'t need to change anything there.', 'rebuzz-backup-and-restore'); ?>
+        </p>
+        <p>
+            <a class="button button-primary" href="<?php echo esc_url(admin_url('options-permalink.php')); ?>">
+                <?php esc_html_e('Open Permalink Settings', 'rebuzz-backup-and-restore'); ?>
+            </a>
+            <a href="<?php echo esc_url($dismissUrl); ?>" style="margin-left:8px;">
+                <?php esc_html_e('Dismiss', 'rebuzz-backup-and-restore'); ?>
+            </a>
+        </p>
+    </div>
+    <?php
+}
+
+/** WordPress rebuilds the rewrite rules every time the Permalinks page loads, with all plugins active. */
+public function permalinks_visited()
+{
+    if (current_user_can('manage_options') && wpcb_permalink_resave_pending()) {
+        wpcb_clear_permalink_resave();
+        $this->permalinksRebuilt = true;
+    }
+}
+
+public function dismiss_permalink_notice()
+{
+    check_admin_referer('wpcb_dismiss_permalink_notice');
+
+    if (!current_user_can('manage_options')) {
+        wp_die(esc_html__('Permission denied.', 'rebuzz-backup-and-restore'));
+    }
+
+    wpcb_clear_permalink_resave();
+
+    wp_safe_redirect(wp_get_referer() ?: admin_url());
+
+    exit;
 }
 
 /**

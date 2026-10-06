@@ -101,8 +101,10 @@ function wpcb_menu_icon()
  * deepest ancestor that does exist is realpath()'d - which is what
  * resolves any symlink in the part of the path that is real - and the
  * remaining segments are then applied literally, with ".." collapsed.
+ * Parts open_basedir hides from PHP are applied literally the same way:
+ * a document root outside it is still served, so it must not drop out.
  *
- * @return string Normalised absolute path, or '' if it cannot be resolved.
+ * @return string Normalised absolute path, or '' if it is not absolute.
  */
 function wpcb_canonical_path($path)
 {
@@ -123,34 +125,32 @@ function wpcb_canonical_path($path)
         return '';
     }
 
-    $real = realpath($path);
-
-    if ($real !== false) {
-        return rtrim(str_replace('\\', '/', $real), '/');
-    }
-
-    // Walk up to the deepest part that exists, keeping what we trim.
+    // Walk up to the deepest part PHP can resolve, keeping what we trim.
     $trailing = [];
     $current  = $path;
 
-    while ($current !== '' && realpath($current) === false) {
+    while (true) {
+
+        $base = @realpath($current); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- outside open_basedir it only warns and returns false.
+
+        if ($base !== false) {
+            break;
+        }
 
         $parent = dirname($current);
 
-        // dirname() stops changing at a filesystem root; without this
-        // an unresolvable path would loop forever.
+        // dirname() stops changing at a filesystem root.
         if ($parent === $current) {
-            return '';
+            break;
         }
 
         array_unshift($trailing, basename($current));
         $current = $parent;
     }
 
-    $base = realpath($current);
-
+    // Nothing resolvable, not even the root: build on the root as written.
     if ($base === false) {
-        return '';
+        $base = $current;
     }
 
     $segments = explode('/', rtrim(str_replace('\\', '/', $base), '/'));
@@ -162,7 +162,10 @@ function wpcb_canonical_path($path)
         }
 
         if ($segment === '..') {
-            array_pop($segments);
+            // Never pop the root itself, or the result turns relative.
+            if (count($segments) > 1) {
+                array_pop($segments);
+            }
             continue;
         }
 
@@ -614,6 +617,11 @@ function wpcb_storage_exposure()
 
     $dir = wpcb_backups_dir();
 
+    // Recreate a deleted folder: backups and uploads are refused before either would.
+    if (!is_dir($dir)) {
+        wpcb_prepare_data_directories();
+    }
+
     if (!is_dir($dir)) {
         return 'unknown';
     }
@@ -656,7 +664,9 @@ function wpcb_storage_exposure()
 
 /**
  * wpcb_storage_exposure(), cached for a day so the HTTP round trip
- * happens on an occasional admin page load rather than constantly.
+ * happens on an occasional admin page load rather than constantly -
+ * but 'unknown' for five minutes only, since it refuses backups and may
+ * have been a passing network error.
  * A completed backup clears it, since that is when it matters most.
  */
 function wpcb_storage_exposure_cached()
@@ -669,7 +679,7 @@ function wpcb_storage_exposure_cached()
 
     $result = wpcb_storage_exposure();
 
-    set_transient('wpcb_storage_exposure', $result, DAY_IN_SECONDS);
+    set_transient('wpcb_storage_exposure', $result, $result === 'unknown' ? 5 * MINUTE_IN_SECONDS : DAY_IN_SECONDS);
 
     return $result;
 }
@@ -684,20 +694,18 @@ function wpcb_storage_exposure_cached()
  * out. The plugin refuses to create one when this returns false, rather
  * than producing a publicly downloadable archive and warning about it.
  *
- * Three ways it can be satisfied, strongest first:
+ * Two ways it can be satisfied:
  *
  *  1. WPCB_BACKUP_DIR points outside the served tree. There is then no
  *     URL that maps to the file at all.
  *  2. The canary check actually fetched a test file from the backups
  *     folder and the server refused - an .htaccess or web.config rule
  *     really is in force, or the host blocks the folder itself.
- *  3. The canary could not run (many hosts block loopback HTTP), so
- *     fall back to what the server says it is. Only Apache-family and
- *     IIS read the rule files this plugin writes; Nginx does not.
  *
- * Anything else - including "the check could not run and the server is
- * Nginx or unrecognised" - is treated as unsafe. Guessing in the other
- * direction is what leaves a database dump on the open web.
+ * Anything else, including a canary check that could not run, is
+ * treated as unsafe. SERVER_SOFTWARE can't stand in for the check:
+ * behind an Nginx front end it still says Apache, while Nginx serves
+ * the archive and never reads .htaccess.
  *
  * @return bool
  */
@@ -707,54 +715,7 @@ function wpcb_storage_is_private()
         return true;
     }
 
-    $exposure = wpcb_storage_exposure_cached();
-
-    if ($exposure === 'public') {
-        return false;
-    }
-
-    if ($exposure === 'private') {
-        return true;
-    }
-
-    // 'unknown' - the loopback request failed, which proves nothing.
-    return wpcb_server_honours_directory_rules();
-}
-
-/**
- * Whether this server reads the per-directory rule files
- * wpcb_protect_directory() writes.
- *
- * Only consulted when the canary check could not complete. Apache and
- * LiteSpeed read .htaccess; IIS reads web.config; Nginx reads neither,
- * and an unrecognised server is assumed not to.
- */
-function wpcb_server_honours_directory_rules()
-{
-    $software = isset($_SERVER['SERVER_SOFTWARE'])
-        ? strtolower(sanitize_text_field(wp_unslash($_SERVER['SERVER_SOFTWARE'])))
-        : '';
-
-    if ($software === '') {
-        return false;
-    }
-
-    if (strpos($software, 'nginx') !== false) {
-        return false;
-    }
-
-    $readsHtaccess = (strpos($software, 'apache') !== false)
-        || (strpos($software, 'litespeed') !== false);
-
-    if ($readsHtaccess) {
-        return file_exists(wpcb_backups_dir() . '/.htaccess');
-    }
-
-    if (strpos($software, 'microsoft-iis') !== false) {
-        return file_exists(wpcb_backups_dir() . '/web.config');
-    }
-
-    return false;
+    return wpcb_storage_exposure_cached() === 'private';
 }
 
 /**
@@ -767,9 +728,14 @@ function wpcb_storage_insecure_reason()
         return '';
     }
 
-    return sprintf(
+    $reason = (wpcb_storage_exposure_cached() === 'public')
         /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
-        __('Backups are currently stored in %1$s, which this server will hand to anyone who requests the file - a backup contains your entire database. Add this line to wp-config.php, pointing at a folder outside your public web root, then try again: %2$s', 'rebuzz-backup-and-restore'),
+        ? __('Backups are currently stored in %1$s, which this server will hand to anyone who requests the file - a backup contains your entire database. Add this line to wp-config.php, pointing at a folder outside your public web root, then try again: %2$s', 'rebuzz-backup-and-restore')
+        /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
+        : __('This site could not make a request to itself to check whether %1$s can be downloaded from the web, so no backup is stored there - a backup contains your entire database. If that was a passing network problem, try again in five minutes. Otherwise add this line to wp-config.php, pointing at a folder outside your public web root: %2$s', 'rebuzz-backup-and-restore');
+
+    return sprintf(
+        $reason,
         wpcb_display_path(wpcb_backups_dir()) . '/',
         "define( 'WPCB_BACKUP_DIR', '/full/path/outside/public_html/rebuzz-backups' );"
     );
@@ -886,7 +852,8 @@ function wpcb_check_upload_disk_space($fileSize, $dir)
     // 15% margin, same reasoning as wpcb_check_restore_disk_space().
     $required = (int) ($fileSize * 1.15);
 
-    $freeRaw = @disk_free_space($dir);
+    // Disabled on some hosts, where PHP 8 would fatal despite "@"; false reads as unmeasured.
+    $freeRaw = function_exists('disk_free_space') ? @disk_free_space($dir) : false;
     $unknown = ($freeRaw === false);
     $free = $unknown ? 0 : (int) $freeRaw;
 
@@ -1032,12 +999,58 @@ function wpcb_directory_size($dir)
     return $size;
 }
 
+/** The access-blocking files wpcb_protect_directory() writes into a folder. */
+function wpcb_guard_files()
+{
+    return ['.htaccess', 'web.config', 'index.php'];
+}
+
+/**
+ * Bytes of scratch files left by unfinished backups and restores.
+ * The temp folder's own guard files don't count: they are always
+ * there, so counting them showed the panel on every site.
+ */
+function wpcb_temp_usage()
+{
+    $temp = wpcb_temp_dir();
+    $size = wpcb_directory_size($temp);
+
+    foreach (wpcb_guard_files() as $guard) {
+        if (is_file($temp . '/' . $guard)) {
+            $size -= (int) filesize($temp . '/' . $guard);
+        }
+    }
+
+    // Restore workspaces live beside temp/, not in it - see wpcb_clear_stale_restore_workspaces().
+    foreach (wpcb_restore_workspace_dirs() as $restoreDir) {
+        $size += wpcb_directory_size($restoreDir);
+    }
+
+    return max(0, $size);
+}
+
+/** Shows the "open Permalink Settings" reminder on admin screens - see WPCB_Admin::permalink_notice(). */
+function wpcb_request_permalink_resave()
+{
+    update_option('wpcb_permalink_reminder', time(), false);
+}
+
+function wpcb_permalink_resave_pending()
+{
+    return (int) get_option('wpcb_permalink_reminder', 0) > 0;
+}
+
+function wpcb_clear_permalink_resave()
+{
+    delete_option('wpcb_permalink_reminder');
+}
+
 /**
  * Delete everything inside $dir (not $dir itself); returns bytes freed.
  * Used to clear temp/ from wp-admin (see WPCB_Admin::clear_temp()).
  * Never follows a symlink into its target, only removes the link.
  */
-function wpcb_clear_directory($dir)
+function wpcb_clear_directory($dir, array $keep = [])
 {
     if (!is_dir($dir)) {
         return 0;
@@ -1047,7 +1060,7 @@ function wpcb_clear_directory($dir)
 
     foreach (scandir($dir) as $item) {
 
-        if ($item === '.' || $item === '..') {
+        if ($item === '.' || $item === '..' || in_array($item, $keep, true)) {
             continue;
         }
 
@@ -1315,8 +1328,8 @@ function wpcb_check_restore_disk_space($zipPath)
     // and can be different mounts. Measuring the wrong one reports free
     // space for a filesystem the restore never writes to.
     //
-    // false (not 0) means disk_free_space() couldn't measure - treat
-    // as passing. An actual 0 means disk is really full - should fail.
+    // false (not 0) means disk_free_space() couldn't measure or is
+    // disabled - treat as passing. An actual 0 means disk is really full.
     $restoreDir = wpcb_data_dir();
 
     if (!is_dir($restoreDir)) {
@@ -1324,7 +1337,7 @@ function wpcb_check_restore_disk_space($zipPath)
         $restoreDir = !empty($upload['basedir']) ? $upload['basedir'] : ABSPATH;
     }
 
-    $freeRaw = @disk_free_space($restoreDir);
+    $freeRaw = function_exists('disk_free_space') ? @disk_free_space($restoreDir) : false;
     $unknown = ($freeRaw === false);
     $free = $unknown ? 0 : (int) $freeRaw;
 
@@ -1748,8 +1761,8 @@ function wpcb_restore_lock_upload_dir()
 
 /**
  * Is a restore genuinely in progress - lock file exists AND its job
- * still reports "running" (a stale lock from a finished/expired job
- * shouldn't block future restores forever).
+ * still reports "running" with recent progress (a stale lock from a
+ * finished, expired or killed job shouldn't block future restores).
  *
  * @return string|null Other job's ID if active, else null.
  */
@@ -1768,13 +1781,32 @@ function wpcb_restore_lock_check()
     }
 
     $job = new WPCB_Job($jobId);
+
+    return wpcb_job_is_alive($job) ? $jobId : null;
+}
+
+/**
+ * True if $job is "running" and has shown progress within
+ * WPCB_STALE_JOB_SECONDS or has a step mid-flight. A job killed
+ * outright (host kill, OOM inside the shutdown handler) is never marked
+ * failed, and would otherwise hold its lock until its transient expired
+ * an hour later.
+ */
+function wpcb_job_is_alive(WPCB_Job $job)
+{
     $state = $job->get();
 
-    if (($state['status'] ?? '') === 'running') {
-        return $jobId;
+    if (($state['status'] ?? '') !== 'running') {
+        return false;
     }
 
-    return null;
+    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
+
+    return !(
+        $lastSeen > 0 &&
+        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
+        !$job->isProcessing()
+    );
 }
 
 /**
@@ -1854,6 +1886,9 @@ function wpcb_restore_lock_acquire($jobId)
     // and releasing it disarms the guard, with no second piece of state
     // that could drift out of step with this one.
 
+    // So a fatal later in this request can fail the job and free the lock; see WPCB_Admin::crashedRequestJob().
+    $GLOBALS['wpcb_lock_claimed']['restore'] = $jobId;
+
     return true;
 }
 
@@ -1863,6 +1898,8 @@ function wpcb_restore_lock_acquire($jobId)
  */
 function wpcb_restore_lock_release()
 {
+    unset($GLOBALS['wpcb_lock_claimed']['restore']);
+
     $path = wpcb_restore_lock_path();
 
     if (file_exists($path)) {
@@ -1902,34 +1939,13 @@ function wpcb_backup_lock_check()
     }
 
     $job = new WPCB_Job($jobId);
-    $state = $job->get();
 
-    if (($state['status'] ?? '') !== 'running') {
-        return null;
-    }
-
-    /*
-     * A backup killed outright (host kill, OOM inside the shutdown
-     * handler) never gets marked failed, and used to block new backups
-     * until its transient expired an hour later. No progress for this
-     * long, and no step mid-flight, means nothing is running any more.
-     */
-    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
-
-    if (
-        $lastSeen > 0 &&
-        (time() - $lastSeen) > WPCB_STALE_JOB_SECONDS &&
-        !$job->isProcessing()
-    ) {
-        return null;
-    }
-
-    return $jobId;
+    return wpcb_job_is_alive($job) ? $jobId : null;
 }
 
 /**
- * Seconds without progress after which a "running" backup is treated
- * as dead - see wpcb_backup_lock_check().
+ * Seconds without progress after which a "running" backup or restore
+ * is treated as dead - see wpcb_job_is_alive().
  */
 if (!defined('WPCB_STALE_JOB_SECONDS')) {
     define('WPCB_STALE_JOB_SECONDS', 10 * MINUTE_IN_SECONDS);
@@ -1966,6 +1982,19 @@ function wpcb_recover_db_connection()
 }
 
 /**
+ * Second sentence of a crash message: blames PHP's time or memory limit
+ * only when that is what the fatal error actually was.
+ */
+function wpcb_fatal_error_hint($errorMessage)
+{
+    if (preg_match('/Maximum execution time|Allowed memory size|Out of memory/i', (string) $errorMessage)) {
+        return __('A PHP execution time or memory limit was hit - consider raising max_execution_time or memory_limit. Your host\'s PHP error log has the full trace.', 'rebuzz-backup-and-restore');
+    }
+
+    return __('Your host\'s PHP error log has the full trace.', 'rebuzz-backup-and-restore');
+}
+
+/**
  * Best-effort set_time_limit(). Hosts often list it in disable_functions,
  * and on PHP 8 calling a disabled function is a fatal error that "@"
  * doesn't suppress - so every step would crash. The chunked steps'
@@ -1980,30 +2009,77 @@ function wpcb_extend_time_limit($seconds)
 }
 
 /**
- * First batch size for walking $table, sized so one batch holds about
- * $targetBytes going by the table's average row length.
+ * First batch size for walking a table. Deliberately small and not
+ * sized from Avg_row_length: that is an estimate (and 0 or stale on
+ * many tables), and one wrong guess on a table of big rows runs out of
+ * memory. Batches grow from what they actually measure.
  */
-function wpcb_initial_batch_rows($table, $targetBytes, $maxRows)
+function wpcb_initial_batch_rows($maxRows)
 {
-    global $wpdb;
-
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- table statistics; prepared, nothing to cache.
-    $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS LIKE %s', $wpdb->esc_like($table)), ARRAY_A);
-
-    $average = isset($status['Avg_row_length']) ? (int) $status['Avg_row_length'] : 0;
-
-    if ($average <= 0) {
-        return (int) $maxRows;
-    }
-
-    return max(1, min((int) $maxRows, (int) floor($targetBytes / $average)));
+    return max(1, min(16, (int) $maxRows));
 }
 
 /**
- * Next batch size given how many bytes the last one actually held.
- * Averages hide the odd huge row, so this corrects as it goes; growth
- * is capped at double per batch so one small batch can't jump straight
- * back to a size that runs out of memory.
+ * True if any of $types (SHOW COLUMNS "Type" values) can hold a value
+ * past the 64 KB MySQL allows a row's other columns in total - such a
+ * table must have each batch sized by wpcb_rows_within_bytes(), since
+ * growing from the last batch's size can't see a huge row coming.
+ */
+function wpcb_has_large_columns(array $types)
+{
+    foreach ($types as $type) {
+
+        if (preg_match('/text|blob|json/i', (string) $type)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * SELECT expression for the stored size of $columns, aliased wpcb_len -
+ * read by the server without sending the values themselves.
+ */
+function wpcb_length_select(array $columns)
+{
+    $lengths = array_map(function ($column) {
+        return 'COALESCE(LENGTH(`' . str_replace('`', '``', $column) . '`), 0)';
+    }, $columns);
+
+    return (empty($lengths) ? '0' : implode(' + ', $lengths)) . ' AS `wpcb_len`';
+}
+
+/**
+ * How many of the next rows, with these sizes, fit in $targetBytes -
+ * at least 1, since a single row bigger than the target still has to
+ * be read.
+ *
+ * @param int[] $lengths Sizes of the next rows, in order.
+ */
+function wpcb_rows_within_bytes(array $lengths, $targetBytes)
+{
+    $total = 0;
+    $rows = 0;
+
+    foreach ($lengths as $length) {
+
+        $total += (int) $length;
+
+        if ($rows > 0 && $total > $targetBytes) {
+            break;
+        }
+
+        $rows++;
+    }
+
+    return max(1, $rows);
+}
+
+/**
+ * Next batch size given how many bytes the last one actually held, for
+ * tables without large columns (see wpcb_has_large_columns()), where
+ * no row can exceed 64 KB. Growth is capped at double per batch.
  */
 function wpcb_adapt_batch_rows($rows, $batchBytes, $targetBytes, $maxRows)
 {
@@ -2053,6 +2129,8 @@ function wpcb_backup_lock_acquire($jobId)
         return false;
     }
 
+    $GLOBALS['wpcb_lock_claimed']['backup'] = $jobId;
+
     return true;
 }
 
@@ -2061,6 +2139,8 @@ function wpcb_backup_lock_acquire($jobId)
  */
 function wpcb_backup_lock_release()
 {
+    unset($GLOBALS['wpcb_lock_claimed']['backup']);
+
     $path = wpcb_backup_lock_path();
 
     if (file_exists($path)) {

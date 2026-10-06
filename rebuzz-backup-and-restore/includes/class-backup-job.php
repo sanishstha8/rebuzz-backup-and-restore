@@ -543,10 +543,12 @@ class WPCB_Backup_Job
          * Re-test now the archive is actually on disk, rather than
          * trusting the result from when the job started - a rule file
          * could have been removed, or the site moved, during the run.
+         * Only proof of exposure discards it: the job started with
+         * privacy proven, and a re-test that can't run proves nothing.
          */
         delete_transient('wpcb_storage_exposure');
 
-        if (!wpcb_storage_is_private()) {
+        if (wpcb_storage_exposure_cached() === 'public') {
 
             /*
              * Deleted, not kept and warned about. The archive is a
