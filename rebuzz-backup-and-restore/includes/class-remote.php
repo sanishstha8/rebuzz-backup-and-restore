@@ -5,7 +5,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * A place backups can be sent to: S3-compatible storage or Dropbox.
+ * A place backups can be sent to: S3-compatible storage, Dropbox or Google Drive.
  *
  * Every transfer moves one piece of at most WPCB_Storage::CHUNK bytes
  * per call, so a multi-gigabyte backup crosses many short requests the
@@ -19,13 +19,22 @@ if (!defined('ABSPATH')) {
  */
 abstract class WPCB_Remote
 {
-    /** 's3' or 'dropbox'. */
+    /** @var string The local file being uploaded, for checking that a file already there is a copy of it. */
+    protected $source = '';
+
+    /** Set before uploadChunk(); '' when unknown, and then no file already there counts as this one. */
+    public function setSource($path)
+    {
+        $this->source = (string) $path;
+    }
+
+    /** 's3', 'dropbox' or 'gdrive'. */
     abstract public function id();
 
     /** Service name for messages, e.g. "Backblaze B2". */
     abstract public function label();
 
-    /** Where files go, for messages: a bucket and folder, or a Dropbox folder. */
+    /** Where files go, for messages: a bucket and folder, or a Dropbox or Google Drive folder. */
     abstract public function location();
 
     /** Checks the credentials can list, write and delete. @return string|WP_Error What was checked. */
@@ -46,6 +55,18 @@ abstract class WPCB_Remote
 
     /** @return array<int, array{name: string, size: int, time: int}>|WP_Error Backup ZIPs in the folder. */
     abstract public function listBackups();
+
+    /**
+     * Backup ZIPs one level above the folder, where they can't be seen -
+     * put there by hand by mistake. Only for an empty folder's hint, so
+     * a failure counts as none.
+     *
+     * @return array<int, array{name: string, size: int, time: int}>
+     */
+    public function misplaced()
+    {
+        return [];
+    }
 
     /** @return true|WP_Error Deleting a file that's already gone counts as success. */
     abstract public function delete($name);

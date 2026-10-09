@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ReBuzz Backup and Restore
  * Description: Complete WordPress Backup & Restore Solution
- * Version: 1.8.0
+ * Version: 1.9.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: ReBuzz
@@ -57,6 +57,9 @@ if (!defined('ABSPATH')) {
         'wpcb_dropbox_finish',
         'wpcb_dropbox_disconnect',
         'wpcb_dropbox_test',
+        'wpcb_gdrive_start',
+        'wpcb_gdrive_disconnect',
+        'wpcb_gdrive_test',
         'wpcb_remote_list',
         'wpcb_remote_delete',
         'wpcb_transfer_start',
@@ -188,13 +191,18 @@ if (!defined('ABSPATH')) {
     });
 })();
 
-define('WPCB_VERSION', '1.8.0');
+define('WPCB_VERSION', '1.9.0');
 define('WPCB_PATH', plugin_dir_path(__FILE__));
 define('WPCB_URL', plugin_dir_url(__FILE__));
 
 // The plugin's Dropbox app (App folder access, PKCE, so the key isn't a secret). wp-config.php can set its own.
 if (!defined('WPCB_DROPBOX_APP_KEY')) {
     define('WPCB_DROPBOX_APP_KEY', 'x9at2vr25yrdrli');
+}
+
+// The plugin's Google Drive sign-in relay: it holds the client secret Google requires, and no files pass through it.
+if (!defined('WPCB_GDRIVE_RELAY')) {
+    define('WPCB_GDRIVE_RELAY', 'https://rebuzz-gdrive.xthasanish44.workers.dev');
 }
 
 require_once WPCB_PATH . 'includes/class-activator.php';

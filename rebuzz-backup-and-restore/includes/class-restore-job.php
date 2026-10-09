@@ -1663,7 +1663,7 @@ class WPCB_Restore_Job
     /** The cloud connection; the secrets are encrypted with this server's keys. */
     private static function cloudOptions()
     {
-        return [WPCB_Storage::OPTION, WPCB_Storage::SECRETS, WPCB_Storage::DROPBOX];
+        return [WPCB_Storage::OPTION, WPCB_Storage::SECRETS, WPCB_Storage::DROPBOX, WPCB_Storage::GDRIVE];
     }
 
     /** This plugin's options as they are now; absent ones are left out. */

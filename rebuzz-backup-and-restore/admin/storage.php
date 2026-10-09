@@ -13,8 +13,11 @@ $providers = WPCB_Remote_S3::providers();
 $remotes = WPCB_Storage::remotes();
 $s3 = $remotes['s3'] ?? null;
 $dropbox = $remotes['dropbox'] ?? null;
+$gdrive = $remotes['gdrive'] ?? null;
 $s3SecretSaved = WPCB_Storage::hasSecret('s3_secret');
 $dropboxKey = WPCB_Remote_Dropbox::appKey();
+$gdriveRelay = WPCB_Remote_GDrive::relay();
+$gdriveNotice = WPCB_Storage::gdriveNotice();
 $history = (new WPCB_History())->get_backups();
 $name = WPCB_Storage::OPTION;
 
@@ -134,6 +137,8 @@ WPCB_Storage::clearStaleParts();
 
             </div>
 
+            <div class="wpcb-stack">
+
             <div class="wpcb-card">
 
                 <h2>
@@ -177,7 +182,7 @@ WPCB_Storage::clearStaleParts();
                         printf(
                             /* translators: %s: Dropbox account, e.g. "Jane Doe (jane@example.com)" */
                             esc_html__('Connected to the Dropbox account of %s.', 'rebuzz-backup-and-restore'),
-                            '<strong>' . esc_html(WPCB_Storage::dropboxAccount()) . '</strong>'
+                            '<strong>' . esc_html(WPCB_Storage::account('dropbox')) . '</strong>'
                         );
                         ?>
                     </p>
@@ -213,6 +218,92 @@ WPCB_Storage::clearStaleParts();
 
             </div>
 
+            <div class="wpcb-card" id="wpcb-gdrive-card">
+
+                <h2>
+                    Google Drive
+                    <?php if ($gdrive) : ?>
+                        <span class="wpcb-tag wpcb-tag-ok"><?php esc_html_e('Connected', 'rebuzz-backup-and-restore'); ?></span>
+                    <?php endif; ?>
+                </h2>
+
+                <?php // A success needs no notice: the card itself now says connected, and to which account. ?>
+                <?php if ($gdriveNotice && !$gdriveNotice['ok']) : ?>
+                    <div class="notice notice-error inline"><p><?php echo esc_html($gdriveNotice['text']); ?></p></div>
+                <?php endif; ?>
+
+                <?php if ($gdriveRelay === '') : ?>
+
+                    <p><?php esc_html_e('Google Drive needs this plugin\'s sign-in service, which isn\'t set in this copy of the plugin.', 'rebuzz-backup-and-restore'); ?></p>
+
+                <?php elseif (!$gdrive) : ?>
+
+                    <p><?php esc_html_e('Backups go into a folder in your Google Drive. The plugin can only see the files it creates there - nothing else in your Drive.', 'rebuzz-backup-and-restore'); ?></p>
+
+                    <?php if (WPCB_Storage::secretUnreadable('gdrive_refresh')) : ?>
+                        <div class="notice notice-warning inline"><p><?php esc_html_e('Google Drive was connected, but its saved access can\'t be read on this server - the site\'s secret keys in wp-config.php have changed. Connect it again.', 'rebuzz-backup-and-restore'); ?></p></div>
+                    <?php endif; ?>
+
+                    <div class="wpcb-action">
+                        <button type="button" id="wpcb-gdrive-start" class="button button-primary"><?php esc_html_e('Connect Google Drive', 'rebuzz-backup-and-restore'); ?></button>
+                        <span id="wpcb-gdrive-status" class="wpcb-loading" aria-live="polite"></span>
+                    </div>
+
+                    <p class="description">
+                        <?php
+                        printf(
+                            /* translators: %s: web address of the plugin's sign-in service */
+                            esc_html__('Goes to Google through the plugin\'s sign-in service at %s, which confirms this site, then brings you back here. Your backups go straight between this site and Google.', 'rebuzz-backup-and-restore'),
+                            esc_html((string) wp_parse_url($gdriveRelay, PHP_URL_HOST))
+                        );
+                        ?>
+                    </p>
+
+                <?php else : ?>
+
+                    <p>
+                        <?php
+                        printf(
+                            /* translators: %s: Google account, e.g. "Jane Doe (jane@example.com)" */
+                            esc_html__('Connected to the Google Drive of %s.', 'rebuzz-backup-and-restore'),
+                            '<strong>' . esc_html(WPCB_Storage::account('gdrive')) . '</strong>'
+                        );
+                        ?>
+                    </p>
+
+                    <table class="form-table wpcb-compact" role="presentation">
+
+                        <tr>
+                            <th scope="row"><label for="wpcb-gdrive-folder"><?php esc_html_e('Folder', 'rebuzz-backup-and-restore'); ?></label></th>
+                            <td>
+                                <input type="text" id="wpcb-gdrive-folder" class="regular-text" name="<?php echo esc_attr($name); ?>[gdrive][folder]" value="<?php echo esc_attr($storage['gdrive']['folder']); ?>">
+                                <p class="description"><?php esc_html_e('In My Drive; made when the first backup arrives. Give each site its own folder.', 'rebuzz-backup-and-restore'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th scope="row"><label for="wpcb-gdrive-keep"><?php esc_html_e('Keep', 'rebuzz-backup-and-restore'); ?></label></th>
+                            <td>
+                                <input type="number" id="wpcb-gdrive-keep" class="small-text" min="1" max="100" name="<?php echo esc_attr($name); ?>[gdrive][keep]" value="<?php echo esc_attr((int) $storage['gdrive']['keep']); ?>">
+                                <?php esc_html_e('backups here', 'rebuzz-backup-and-restore'); ?>
+                                <p class="description"><?php esc_html_e('When a new one arrives, older backups this site sent here are deleted for good, not moved to the bin.', 'rebuzz-backup-and-restore'); ?></p>
+                            </td>
+                        </tr>
+
+                    </table>
+
+                    <div class="wpcb-action">
+                        <button type="button" id="wpcb-gdrive-test" class="button"><?php esc_html_e('Test connection', 'rebuzz-backup-and-restore'); ?></button>
+                        <button type="button" id="wpcb-gdrive-disconnect" class="button button-link-delete"><?php esc_html_e('Disconnect', 'rebuzz-backup-and-restore'); ?></button>
+                        <span id="wpcb-gdrive-status" class="wpcb-loading" aria-live="polite"></span>
+                    </div>
+
+                <?php endif; ?>
+
+            </div>
+
+            </div>
+
         </div>
 
         <div class="wpcb-card">
@@ -225,13 +316,14 @@ WPCB_Storage::clearStaleParts();
                     <th scope="row"><?php esc_html_e('Send new backups to', 'rebuzz-backup-and-restore'); ?></th>
                     <td>
                         <fieldset>
-                            <?php foreach (['s3' => $s3, 'dropbox' => $dropbox] as $id => $remote) : ?>
+                            <?php foreach (WPCB_Storage::ids() as $id) : ?>
+                                <?php $remote = $remotes[$id] ?? null; ?>
                                 <label>
                                     <input type="checkbox" name="<?php echo esc_attr($name); ?>[send][<?php echo esc_attr($id); ?>]" value="1" <?php checked(!empty($storage['send'][$id])); ?> <?php disabled($remote === null && empty($storage['send'][$id])); ?>>
                                     <?php if ($remote) : ?>
                                         <?php echo esc_html($remote->label()); ?> <span class="description">&mdash; <?php echo esc_html($remote->location()); ?></span>
                                     <?php else : ?>
-                                        <?php echo esc_html($id === 's3' ? __('S3 storage', 'rebuzz-backup-and-restore') : 'Dropbox'); ?> <span class="description">(<?php esc_html_e('not set up yet', 'rebuzz-backup-and-restore'); ?>)</span>
+                                        <?php echo esc_html(WPCB_Storage::label($id)); ?> <span class="description">(<?php esc_html_e('not set up yet', 'rebuzz-backup-and-restore'); ?>)</span>
                                     <?php endif; ?>
                                 </label><br>
                             <?php endforeach; ?>

@@ -95,6 +95,18 @@
     align-items: start;
 }
 
+/* Several cards sharing one grid column, one under another. */
+.wpcb-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+}
+
+.wpcb-stack > .wpcb-card {
+    margin: 0;
+}
+
 /* Summary tiles */
 
 .wpcb-stat-label {

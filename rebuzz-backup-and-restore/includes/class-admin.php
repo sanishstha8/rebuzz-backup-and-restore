@@ -253,6 +253,7 @@ class WPCB_Admin
                     'working' => __('Working...', 'rebuzz-backup-and-restore'),
                     'open_dropbox' => __('Your browser blocked the new tab. Click here to open Dropbox.', 'rebuzz-backup-and-restore'),
                     'disconnect_confirm' => __('Disconnect Dropbox? Backups already there stay in your Dropbox.', 'rebuzz-backup-and-restore'),
+                    'gdrive_disconnect_confirm' => __('Disconnect Google Drive? Backups already there stay in your Drive.', 'rebuzz-backup-and-restore'),
                     'cloud_empty' => __('No backups there yet.', 'rebuzz-backup-and-restore'),
                     'on_server' => __('On this server', 'rebuzz-backup-and-restore'),
                     'download' => __('Download to this site', 'rebuzz-backup-and-restore'),
@@ -338,6 +339,13 @@ class WPCB_Admin
 
         $site = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
 
+        // WordPress reports the mailer's own reason through this action, not through wp_mail()'s return value.
+        $reason = '';
+        $catch = function ($error) use (&$reason) {
+            $reason = is_wp_error($error) ? $error->get_error_message() : '';
+        };
+        add_action('wp_mail_failed', $catch);
+
         $sent = wp_mail(
             $to,
             /* translators: %s: site name */
@@ -346,8 +354,17 @@ class WPCB_Admin
             sprintf(__('This is a test from ReBuzz Backup and Restore on %s. Backup notices will arrive at this address.', 'rebuzz-backup-and-restore'), home_url())
         );
 
+        remove_action('wp_mail_failed', $catch);
+
         if (!$sent) {
-            wp_send_json_error(__('WordPress could not send the email. Many hosts need an SMTP plugin before WordPress can send mail.', 'rebuzz-backup-and-restore'));
+            $message = __('WordPress could not send the email. Many hosts need an SMTP plugin before WordPress can send mail.', 'rebuzz-backup-and-restore');
+
+            if ($reason !== '') {
+                /* translators: %s: the error the mailer gave */
+                $message .= ' ' . sprintf(__('The mailer said: %s', 'rebuzz-backup-and-restore'), wp_strip_all_tags($reason));
+            }
+
+            wp_send_json_error($message);
         }
 
         /* translators: %s: email addresses */
@@ -597,6 +614,11 @@ public function start_backup()
         wp_send_json_error(wpcb_storage_insecure_reason());
     }
 
+    // A restore replaces the files and database a backup reads: the backup would be half of each.
+    if (wpcb_restore_lock_check() !== null) {
+        wp_send_json_error(__('A restore is running. Try again when it has finished.', 'rebuzz-backup-and-restore'));
+    }
+
     // Without this, a dropped connection that makes the JS re-enable
     // "Create Backup" (see admin.js's retry-exhaustion handling) while
     // the original job is still running server-side would let a second
@@ -666,6 +688,16 @@ public function backup_step()
         wp_send_json_success($job->getPublic());
     }
 
+    /*
+     * Its page was left long enough for a restore to start (see
+     * wpcb_backup_blocks_restore()) and has come back - a laptop woken
+     * from sleep. Carrying on would back up a half-restored site.
+     */
+    if (($job->get()['status'] ?? '') === 'running' && wpcb_restore_lock_check() !== null) {
+        self::stopBackupForRestore($job);
+        wp_send_json_success($job->getPublic());
+    }
+
     $job->markProcessing();
 
     $backup = new WPCB_Backup_Job($job);
@@ -681,6 +713,27 @@ public function backup_step()
     wp_send_json_success(
         $job->getPublic()
     );
+}
+
+/** Ends a backup a restore overtook: its temporary files go, and its lock if it still holds it. */
+private static function stopBackupForRestore(WPCB_Job $job)
+{
+    $state = $job->get();
+
+    if (!empty($state['workspace'])) {
+        (new WPCB_Workspace($state['workspace']))->cleanup();
+    }
+
+    if (wpcb_backup_lock_owner() === $job->id()) {
+        wpcb_backup_lock_release();
+    }
+
+    (new WPCB_Logger('backup'))->log('Backup stopped: a restore started while its page was away.');
+
+    $job->update([
+        'status'  => 'failed',
+        'message' => __('This backup stopped: its page was left, and a restore has started since. Make a new backup once the restore has finished.', 'rebuzz-backup-and-restore'),
+    ]);
 }
 
 /** Validate an uploaded backup ZIP, store it, redirect to restore. */
@@ -981,6 +1034,12 @@ public function start_restore()
                 $activeJobId
             )
         );
+    }
+
+    $backupBusy = wpcb_backup_blocks_restore();
+
+    if ($backupBusy !== '') {
+        wp_send_json_error($backupBusy);
     }
 
     $badPermissions = wpcb_check_restore_write_permissions();

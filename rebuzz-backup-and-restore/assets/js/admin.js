@@ -953,6 +953,29 @@ jQuery(function ($) {
         });
     });
 
+    /** Google Drive: off to the relay and Google in this tab; it comes back to the Storage tab. */
+
+    $('#wpcb-gdrive-start').on('click', function () {
+        storageAction($(this), $('#wpcb-gdrive-status'), { action: 'wpcb_gdrive_start' }, function (data) {
+            window.location.href = data.url;
+        });
+    });
+
+    $('#wpcb-gdrive-test').on('click', function () {
+        storageAction($(this), $('#wpcb-gdrive-status'), { action: 'wpcb_gdrive_test' });
+    });
+
+    $('#wpcb-gdrive-disconnect').on('click', function () {
+
+        if (!window.confirm(wpcb.i18n.gdrive_disconnect_confirm)) {
+            return;
+        }
+
+        storageAction($(this), $('#wpcb-gdrive-status'), { action: 'wpcb_gdrive_disconnect' }, function () {
+            location.reload();
+        });
+    });
+
     /** Drives a Storage-tab transfer one chunk per request, like a manual backup. */
 
     function runTransfer(jobId, $box, onDone) {
@@ -1141,14 +1164,15 @@ jQuery(function ($) {
 
                 $body.empty();
 
-                if (!response.data.length) {
-                    $body.append($('<p class="wpcb-empty"></p>').text(wpcb.i18n.cloud_empty));
+                if (!response.data.items.length) {
+                    // A hint when backups sit one level up, where they can't be seen.
+                    $body.append($('<p class="wpcb-empty"></p>').text(response.data.hint || wpcb.i18n.cloud_empty));
                     return;
                 }
 
                 var $tbody = $('<tbody></tbody>');
 
-                $.each(response.data, function (i, item) {
+                $.each(response.data.items, function (i, item) {
 
                     var $name = $('<td></td>')
                         .append($('<span class="wpcb-backup-date"></span>').text(item.date))

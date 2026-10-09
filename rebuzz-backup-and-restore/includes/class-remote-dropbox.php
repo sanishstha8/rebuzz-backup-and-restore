@@ -95,7 +95,7 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
             return new WP_Error('wpcb_dropbox', __('Dropbox did not accept that code. Codes work once and expire after a few minutes - click Connect Dropbox again for a new one.', 'rebuzz-backup-and-restore'));
         }
 
-        WPCB_Storage::saveDropboxTokens($token['refresh_token'], $token['access_token'], time() + (int) ($token['expires_in'] ?? 14400));
+        WPCB_Storage::saveTokens('dropbox', $token['refresh_token'], $token['access_token'], time() + (int) ($token['expires_in'] ?? 14400));
 
         $account = $client->account();
 
@@ -103,7 +103,7 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
             return $account;
         }
 
-        WPCB_Storage::saveDropboxAccount($account);
+        WPCB_Storage::saveAccount('dropbox', $account);
 
         return $account;
     }
@@ -133,7 +133,7 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
     /** A current access token, refreshed when it's about to expire. @return string|WP_Error */
     private function accessToken($forceRefresh = false)
     {
-        $auth = WPCB_Storage::dropboxAuth();
+        $auth = WPCB_Storage::oauthAuth('dropbox');
 
         if ($auth['refresh'] === '') {
             return new WP_Error('wpcb_dropbox', __('Dropbox isn\'t connected, or its saved access can\'t be read on this server. Connect Dropbox again on the Storage tab.', 'rebuzz-backup-and-restore'));
@@ -164,7 +164,7 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
             return new WP_Error('wpcb_dropbox', __('Dropbox access was removed or has expired. Connect Dropbox again on the Storage tab.', 'rebuzz-backup-and-restore'));
         }
 
-        WPCB_Storage::saveDropboxTokens(null, $token['access_token'], time() + (int) ($token['expires_in'] ?? 14400));
+        WPCB_Storage::saveTokens('dropbox', null, $token['access_token'], time() + (int) ($token['expires_in'] ?? 14400));
 
         return $token['access_token'];
     }
@@ -347,20 +347,67 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
         return $last ? $this->alreadyThere($sent, $path, $total) : $sent;
     }
 
-    /** After a failed final request: if the complete file is there anyway, the upload succeeded. */
+    /**
+     * After a failed final request: if this very file is there anyway - an
+     * answer lost on the way back - the upload succeeded. The same size
+     * isn't enough: only the same content means the local copy may go.
+     */
     private function alreadyThere(WP_Error $error, $path, $total)
     {
         $meta = $this->rpc('files/get_metadata', ['path' => $path]);
 
         if (!is_wp_error($meta)) {
             $json = json_decode($meta['body'], true);
+            $hash = (string) ($json['content_hash'] ?? '');
 
-            if ((int) ($json['size'] ?? -1) === (int) $total) {
+            if ((int) ($json['size'] ?? -1) === (int) $total && $hash !== '' && hash_equals($hash, self::contentHash($this->source))) {
                 return true;
             }
         }
 
         return $error;
+    }
+
+    /**
+     * Dropbox's content hash of a local file: the SHA-256 of the SHA-256s
+     * of its 4 MB blocks. '' when the file can't be read.
+     */
+    private static function contentHash($file)
+    {
+        // phpcs:disable WordPress.WP.AlternativeFunctions -- read in blocks; WP_Filesystem has no streaming API.
+        $handle = $file !== '' ? @fopen($file, 'rb') : false;
+
+        if ($handle === false) {
+            return '';
+        }
+
+        $hashes = '';
+
+        while (!feof($handle)) {
+
+            $block = '';
+
+            while (strlen($block) < 4194304 && !feof($handle)) {
+                $piece = fread($handle, 4194304 - strlen($block));
+
+                if ($piece === false || $piece === '') {
+                    break;
+                }
+
+                $block .= $piece;
+            }
+
+            if ($block === '') {
+                break;
+            }
+
+            $hashes .= hash('sha256', $block, true);
+        }
+
+        fclose($handle);
+        // phpcs:enable WordPress.WP.AlternativeFunctions
+
+        return hash('sha256', $hashes);
     }
 
     public function abortUpload(array $session, $name)
@@ -370,7 +417,25 @@ class WPCB_Remote_Dropbox extends WPCB_Remote
 
     public function listBackups()
     {
-        $response = $this->rpc('files/list_folder', ['path' => $this->folder !== '' ? '/' . $this->folder : '', 'limit' => 2000]);
+        return $this->listZips($this->folder !== '' ? '/' . $this->folder : '');
+    }
+
+    /** ZIPs put straight into the app folder - one level above this site's folder, so they never show here. */
+    public function misplaced()
+    {
+        if ($this->folder === '') {
+            return [];
+        }
+
+        $items = $this->listZips('');
+
+        return is_wp_error($items) ? [] : $items;
+    }
+
+    /** @return array<int, array{name: string, size: int, time: int}>|WP_Error The ZIPs directly in $path. */
+    private function listZips($path)
+    {
+        $response = $this->rpc('files/list_folder', ['path' => $path, 'limit' => 2000]);
 
         if (is_wp_error($response)) {
             $summary = (string) ($response->get_error_data()['summary'] ?? '');

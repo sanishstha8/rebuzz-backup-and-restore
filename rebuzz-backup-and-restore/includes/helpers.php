@@ -259,6 +259,10 @@ function wpcb_path_is_outside_webroot($dir)
         return false;
     }
 
+    if (wpcb_has_unresolved_short_name(array_merge([$dir], $roots))) {
+        return false;
+    }
+
     foreach ($roots as $root) {
 
         if (wpcb_path_is_within($dir, $root)) {
@@ -267,6 +271,30 @@ function wpcb_path_is_outside_webroot($dir)
     }
 
     return true;
+}
+
+/**
+ * Whether any of these canonical paths still holds a Windows short name
+ * (PROGRA~1). realpath() expands those, but not for a folder open_basedir
+ * hides from PHP - and C:/INETPU~1/wwwroot and C:/inetpub/wwwroot are the
+ * same folder while comparing as different ones, so a backups folder
+ * inside the web root could pass for one outside it.
+ *
+ * @param string[] $paths Paths from wpcb_canonical_path().
+ */
+function wpcb_has_unresolved_short_name(array $paths)
+{
+    if (DIRECTORY_SEPARATOR !== '\\') {
+        return false;
+    }
+
+    foreach ($paths as $path) {
+        if (preg_match('/~\d/', (string) $path)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -362,6 +390,10 @@ function wpcb_configured_data_dir_problem()
 
     if (!$isAbsolute) {
         return __('it is not an absolute path', 'rebuzz-backup-and-restore');
+    }
+
+    if (wpcb_has_unresolved_short_name(array_merge([wpcb_canonical_path($dir)], wpcb_public_roots()))) {
+        return __('it, or the folder your web server publishes, is written with a Windows short name such as PROGRA~1 that PHP is not allowed to look up, so it cannot be confirmed to be outside that folder - write the path with full folder names', 'rebuzz-backup-and-restore');
     }
 
     if (!wpcb_path_is_outside_webroot($dir)) {
@@ -602,10 +634,11 @@ function wpcb_stranded_uploads_backups()
  * archives are plain static files and this returns true - which is
  * exactly the condition an administrator needs told about.
  *
- * @return string 'private'  nothing came back, or there is no URL at all
+ * @return string 'private'  the server refused it, or there is no URL at all
  *                'public'   the canary was served verbatim
  *                'unknown'  the check could not complete (loopback
- *                           blocked, DNS, timeout) - never reported as
+ *                           blocked, DNS, timeout, the whole server
+ *                           answering with errors) - never reported as
  *                           safe, since a failed check proves nothing.
  */
 function wpcb_storage_exposure()
@@ -633,33 +666,94 @@ function wpcb_storage_exposure()
         return 'unknown';
     }
 
+    $answer = wpcb_canary_answer(wpcb_backups_url() . '/' . $name, $token);
+
+    // A busy or failing server gets one more try before anything is concluded.
+    if ($answer === 'busy') {
+        sleep(2);
+        $answer = wpcb_canary_answer(wpcb_backups_url() . '/' . $name, $token);
+    }
+
+    /*
+     * Still a server error or "too many requests": that says nothing
+     * about the folder by itself. Apache answers 500 for every file under
+     * an .htaccess it isn't allowed to apply - which does keep the
+     * archives in - but an overloaded or rate-limiting server answers the
+     * same way for files it would gladly serve. A test file in the
+     * uploads folder, which is public by design, tells the two apart:
+     * served there, the server works and it is the backups folder alone
+     * that it refuses.
+     */
+    if ($answer === 'busy') {
+        $answer = wpcb_uploads_canary_served() ? 'refused' : 'failed';
+    }
+
+    wp_delete_file($dir . '/' . $name);
+
+    if ($answer === 'served') {
+        return 'public';
+    }
+
+    // Refused - 403, 404, a login page, an error document - means the bytes were not handed over.
+    return $answer === 'refused' ? 'private' : 'unknown';
+}
+
+/**
+ * How the web server answers a logged-out request for the canary file at
+ * $url: 'served' (the token came back), 'refused' (any other answer the
+ * server chose to give), 'busy' (408, 429 or a 5xx - the server was not
+ * in a state to choose) or 'failed' (no answer at all).
+ *
+ * Redirects are followed, so a folder that answers over http with a
+ * redirect to https is judged by what https then serves.
+ */
+function wpcb_canary_answer($url, $token)
+{
     $response = wp_remote_get(
-        wpcb_backups_url() . '/' . $name,
+        $url,
         [
             'timeout'     => 10,
-            'redirection' => 0,
+            'redirection' => 5,
             'sslverify'   => false,
             // No cookies: this must mimic a logged-out stranger.
             'cookies'     => [],
         ]
     );
 
-    wp_delete_file($dir . '/' . $name);
-
     if (is_wp_error($response)) {
-        return 'unknown';
+        return 'failed';
     }
 
     $code = (int) wp_remote_retrieve_response_code($response);
-    $body = wp_remote_retrieve_body($response);
 
-    if ($code === 200 && trim($body) === $token) {
-        return 'public';
+    if ($code === 200 && trim(wp_remote_retrieve_body($response)) === $token) {
+        return 'served';
     }
 
-    // Any other outcome - 403, 404, a redirect to a login page, an
-    // error document - means the bytes were not handed over.
-    return 'private';
+    return ($code === 0 || $code === 408 || $code === 429 || $code >= 500) ? 'busy' : 'refused';
+}
+
+/** Whether the web server serves a test file from the top of the uploads folder, which is public by design. */
+function wpcb_uploads_canary_served()
+{
+    $upload = wp_upload_dir();
+
+    if (empty($upload['basedir']) || empty($upload['baseurl'])) {
+        return false;
+    }
+
+    $name = 'wpcb-access-check-' . wp_generate_password(16, false, false) . '.txt';
+    $token = wp_generate_password(32, false, false);
+
+    if (file_put_contents($upload['basedir'] . '/' . $name, $token) === false) {
+        return false;
+    }
+
+    $answer = wpcb_canary_answer($upload['baseurl'] . '/' . $name, $token);
+
+    wp_delete_file($upload['basedir'] . '/' . $name);
+
+    return $answer === 'served';
 }
 
 /**
@@ -732,7 +826,7 @@ function wpcb_storage_insecure_reason()
         /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
         ? __('Backups are currently stored in %1$s, which this server will hand to anyone who requests the file - a backup contains your entire database. Add this line to wp-config.php, pointing at a folder outside your public web root, then try again: %2$s', 'rebuzz-backup-and-restore')
         /* translators: 1: path to the backups folder, relative to the WordPress root, 2: the line to add to wp-config.php */
-        : __('This site could not make a request to itself to check whether %1$s can be downloaded from the web, so no backup is stored there - a backup contains your entire database. If that was a passing network problem, try again in five minutes. Otherwise add this line to wp-config.php, pointing at a folder outside your public web root: %2$s', 'rebuzz-backup-and-restore');
+        : __('This site could not check whether %1$s can be downloaded from the web - its request to itself failed, or the server answered with errors - so no backup is stored there: a backup contains your entire database. If that was a passing problem, try again in five minutes. Otherwise add this line to wp-config.php, pointing at a folder outside your public web root: %2$s', 'rebuzz-backup-and-restore');
 
     return sprintf(
         $reason,
@@ -2012,11 +2106,60 @@ function wpcb_backup_lock_owner()
 }
 
 /**
+ * Why a restore can't start because of a backup or a cloud transfer, or
+ * '' when it can. A backup reads the very files and database a restore
+ * replaces, and keeps its progress in that database, so the two never
+ * run at once.
+ *
+ * A backup made with Create Backup only moves while its page asks for
+ * the next step, a few times a second. One that has shown no progress
+ * for WPCB_LEFT_BACKUP_SECONDS, with no step under way, had its page
+ * left: it will never move again, so it doesn't hold the restore up for
+ * the full WPCB_STALE_JOB_SECONDS. Scheduled backups and transfers keep
+ * the full time - they move without a page, and can pause longer.
+ */
+function wpcb_backup_blocks_restore()
+{
+    $jobId = wpcb_backup_lock_check();
+
+    if ($jobId === null) {
+        return '';
+    }
+
+    $job = new WPCB_Job($jobId);
+    $state = $job->get();
+
+    if (($state['kind'] ?? '') === 'transfer') {
+        return __('A backup is being downloaded from or sent to the cloud. Wait for it to finish, or cancel it at the top of this page.', 'rebuzz-backup-and-restore');
+    }
+
+    if (!empty($state['scheduled'])) {
+        return __('A scheduled backup is running. Try again when it has finished.', 'rebuzz-backup-and-restore');
+    }
+
+    $lastSeen = (int) ($state['heartbeat'] ?? $state['started'] ?? 0);
+
+    // Sending to the cloud, one piece may take up to five minutes on a slow connection (WPCB_Storage::uploadStep()).
+    $quiet = isset($state['upload']) ? 2 * WPCB_LEFT_BACKUP_SECONDS : WPCB_LEFT_BACKUP_SECONDS;
+
+    if (!$job->isProcessing() && $lastSeen > 0 && time() - $lastSeen > $quiet) {
+        return '';
+    }
+
+    return __('A backup is running. Try again when it has finished - or, if you left its page, it stopped there, and a restore can start a few minutes later.', 'rebuzz-backup-and-restore');
+}
+
+/**
  * Seconds without progress after which a "running" backup or restore
  * is treated as dead - see wpcb_job_is_alive().
  */
 if (!defined('WPCB_STALE_JOB_SECONDS')) {
     define('WPCB_STALE_JOB_SECONDS', 10 * MINUTE_IN_SECONDS);
+}
+
+/** Seconds without progress after which a Create Backup backup counts as left by its page - see wpcb_backup_blocks_restore(). */
+if (!defined('WPCB_LEFT_BACKUP_SECONDS')) {
+    define('WPCB_LEFT_BACKUP_SECONDS', 3 * MINUTE_IN_SECONDS);
 }
 
 /**

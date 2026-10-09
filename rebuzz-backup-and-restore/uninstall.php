@@ -79,6 +79,7 @@ function wpcb_uninstall_site()
     delete_option('wpcb_storage');
     delete_option('wpcb_remote_secrets');
     delete_option('wpcb_dropbox');
+    delete_option('wpcb_gdrive');
     delete_option('wpcb_remote_uploaded');
     delete_option('wpcb_remote_sent');
 

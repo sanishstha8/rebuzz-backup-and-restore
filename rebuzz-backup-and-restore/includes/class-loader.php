@@ -36,6 +36,7 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-remote.php';
         require_once WPCB_PATH . 'includes/class-remote-s3.php';
         require_once WPCB_PATH . 'includes/class-remote-dropbox.php';
+        require_once WPCB_PATH . 'includes/class-remote-gdrive.php';
         require_once WPCB_PATH . 'includes/class-storage.php';
 
         /*

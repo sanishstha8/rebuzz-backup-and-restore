@@ -120,7 +120,7 @@ $backgroundRunning = WPCB_Scheduler::runningJob() !== null;
                         esc_html(wpcb_display_path(wpcb_backups_dir()) . '/')
                     );
                 } else {
-                    esc_html_e('This site could not make a request to itself to check whether the backup folder is readable from the web. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable. If that was a passing network problem, the check runs again within five minutes.', 'rebuzz-backup-and-restore');
+                    esc_html_e('This site could not check whether the backup folder is readable from the web: its request to itself failed, or the server answered with errors. Rather than assume it is safe, the plugin will not create a backup that might be publicly downloadable. If that was a passing problem, the check runs again within five minutes.', 'rebuzz-backup-and-restore');
                 }
                 ?>
             </p>
@@ -290,7 +290,7 @@ $backgroundRunning = WPCB_Scheduler::runningJob() !== null;
                                     <span class="wpcb-tag"><?php esc_html_e('Scheduled', 'rebuzz-backup-and-restore'); ?></span>
                                 <?php endif; ?>
                                 <?php foreach (WPCB_Storage::uploadedTo($backup['name']) as $cloudId) : ?>
-                                    <span class="wpcb-tag wpcb-tag-ok"><?php echo esc_html($cloudId === 's3' ? 'S3' : 'Dropbox'); ?></span>
+                                    <span class="wpcb-tag wpcb-tag-ok"><?php echo esc_html(WPCB_Storage::shortLabel($cloudId)); ?></span>
                                 <?php endforeach; ?>
                             </span>
                             <span class="wpcb-backup-file"><?php echo esc_html($backup['name']); ?></span>
