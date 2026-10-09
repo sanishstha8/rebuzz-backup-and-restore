@@ -1,0 +1,10 @@
+// Cloudflare Worker for ReBuzz Backup's Google Drive sign-in. See README.md.
+{
+  "name": "rebuzz-gdrive",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "vars": {
+    // The OAuth client ID from Google Cloud (public). The secret and STATE_KEY are set with `wrangler secret put`.
+    "GOOGLE_CLIENT_ID": "PASTE-CLIENT-ID.apps.googleusercontent.com"
+  }
+}
