@@ -200,10 +200,9 @@ if (!defined('WPCB_DROPBOX_APP_KEY')) {
     define('WPCB_DROPBOX_APP_KEY', 'x9at2vr25yrdrli');
 }
 
-// The plugin's Google Drive sign-in relay: it holds the client secret Google requires, and no files pass through it.
-if (!defined('WPCB_GDRIVE_RELAY')) {
-    define('WPCB_GDRIVE_RELAY', 'https://rebuzz-gdrive.xthasanish44.workers.dev');
-}
+// The Google Drive sign-in relay holds the client secret Google requires; no files pass through it.
+// Google Drive stays off until it is set: wp-config.php can define WPCB_GDRIVE_RELAY.
+// The plugin's own (https://rebuzz-gdrive.xthasanish44.workers.dev) becomes the default once it is live.
 
 require_once WPCB_PATH . 'includes/class-activator.php';
 require_once WPCB_PATH . 'includes/class-deactivator.php';

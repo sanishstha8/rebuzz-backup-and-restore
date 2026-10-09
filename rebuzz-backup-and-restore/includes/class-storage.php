@@ -352,10 +352,10 @@ class WPCB_Storage
         return null;
     }
 
-    /** Every destination's ID, in the order they're shown. */
+    /** Every destination's ID, in the order they're shown. Google Drive only where its sign-in service is set. */
     public static function ids()
     {
-        return ['s3', 'dropbox', 'gdrive'];
+        return WPCB_Remote_GDrive::relay() !== '' ? ['s3', 'dropbox', 'gdrive'] : ['s3', 'dropbox'];
     }
 
     /** @return array<string, WPCB_Remote> Every destination that's set up, by ID. */

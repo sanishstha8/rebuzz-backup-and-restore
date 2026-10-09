@@ -253,7 +253,6 @@ class WPCB_Admin
                     'working' => __('Working...', 'rebuzz-backup-and-restore'),
                     'open_dropbox' => __('Your browser blocked the new tab. Click here to open Dropbox.', 'rebuzz-backup-and-restore'),
                     'disconnect_confirm' => __('Disconnect Dropbox? Backups already there stay in your Dropbox.', 'rebuzz-backup-and-restore'),
-                    'gdrive_disconnect_confirm' => __('Disconnect Google Drive? Backups already there stay in your Drive.', 'rebuzz-backup-and-restore'),
                     'cloud_empty' => __('No backups there yet.', 'rebuzz-backup-and-restore'),
                     'on_server' => __('On this server', 'rebuzz-backup-and-restore'),
                     'download' => __('Download to this site', 'rebuzz-backup-and-restore'),

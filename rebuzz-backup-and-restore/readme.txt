@@ -20,7 +20,7 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
 * **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
-* **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others), Dropbox or Google Drive, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
+* **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others) or Dropbox, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
@@ -90,19 +90,11 @@ Use **Send test email** on the Schedule tab. If that email doesn't arrive either
 
 = Which cloud storage can I use? =
 
-Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi, or any other S3-compatible storage you give an endpoint for - Dropbox and Google Drive. Set them up on the Storage tab; **Test connection** writes a small file and deletes it again, so you know uploads will work before the first backup.
-
-= Can the plugin see the rest of my Google Drive? =
-
-No. It asks Google only for permission to see and change the files it creates itself, so your own documents, photos and other files stay invisible to it. Backups go into a folder in My Drive - "ReBuzz Backups" with one folder per site inside, unless you choose another.
-
-= Why does connecting Google Drive go through rebuzz-gdrive.xthasanish44.workers.dev? =
-
-Google only lets a website sign in to Drive with a secret key, and a key can't be kept secret inside a plugin anyone can download. So the plugin's small sign-in service holds it. It shows you which site is asking before you go on to Google, swaps Google's one-time code for access, and renews that access when it expires. It stores nothing, and your backups never pass through it: they go straight between your site and Google.
+Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi, or any other S3-compatible storage you give an endpoint for - and Dropbox. Set them up on the Storage tab; **Test connection** writes a small file and deletes it again, so you know uploads will work before the first backup.
 
 = Are my storage keys safe? =
 
-The S3 secret key and the Dropbox and Google Drive access are stored encrypted, with a key made from the secret keys in your `wp-config.php`. Backups include your database but never `wp-config.php`, so a backup only ever carries the encrypted form. The form never shows a saved secret again. After moving the site to a server with different secret keys, enter the secret again or reconnect Dropbox or Google Drive. Restoring a backup onto a site that already has cloud storage set up keeps that site's own connection.
+The S3 secret key and the Dropbox access are stored encrypted, with a key made from the secret keys in your `wp-config.php`. Backups include your database but never `wp-config.php`, so a backup only ever carries the encrypted form. The form never shows a saved secret again. After moving the site to a server with different secret keys, enter the secret again or reconnect Dropbox. Restoring a backup onto a site that already has cloud storage set up keeps that site's own connection.
 
 = My server died. How do I restore from the cloud? =
 
@@ -128,18 +120,6 @@ Stores copies of your backups in a folder of the plugin's own under Apps in your
 
 Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy](https://www.dropbox.com/privacy) apply.
 
-= Google Drive =
-
-Stores copies of your backups in a folder in your Google Drive, with permission to see only the files the plugin creates. After connecting, the plugin contacts `www.googleapis.com` when a backup is sent, listed, downloaded or deleted, when older backups are deleted to keep the number you chose, when you click Test connection, and once to read the connected account's name and email address. The requests carry the access token, the folder and file names and the backup archives themselves. Disconnecting asks Google, at `oauth2.googleapis.com`, to revoke the access.
-
-Google's [terms of service](https://policies.google.com/terms) and [privacy policy](https://policies.google.com/privacy) apply, and the plugin's use of Google Drive follows the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy).
-
-= ReBuzz Google Drive sign-in service =
-
-Google requires a secret key to sign in, so connecting Google Drive goes through the plugin's sign-in service at `rebuzz-gdrive.xthasanish44.workers.dev`, run by the plugin's author on Cloudflare Workers. When you click Connect Google Drive, your browser opens it with your site's Storage-tab address, so the page can show which site is asking. After you approve access at Google, it sends the one-time code back to that address. Your site then sends it the code - and later, when access needs renewing, the refresh token - and the service adds the secret key, passes them to Google and returns Google's answer. It stores and logs none of this. Your backups and files never pass through it.
-
-Cloudflare's [terms](https://www.cloudflare.com/terms/) and [privacy policy](https://www.cloudflare.com/privacypolicy/) apply to the service's hosting.
-
 == Screenshots ==
 
 1. The Backups tab: when the last backup ran, how much space backups use, whether the backup folder is private, and every backup ready to download, restore or delete.
@@ -148,25 +128,19 @@ Cloudflare's [terms](https://www.cloudflare.com/terms/) and [privacy policy](htt
 4. A finished restore, with a count of what it put back and the one step left: opening Permalink Settings.
 5. The Settings tab, with what each setting changes and the system details to share when asking for help.
 6. The Schedule tab: daily or weekly backups at a chosen hour, how many to keep, and email notices.
-7. The Storage tab: S3-compatible storage, Dropbox and Google Drive, which backups to send, and the backups already in the cloud.
+7. The Storage tab: S3-compatible storage and Dropbox, which backups to send, and the backups already in the cloud.
 
 == Changelog ==
 
 = 1.9.0 =
-* Added: Google Drive, on the Storage tab. Backups go into a folder in My Drive ("ReBuzz Backups", one folder per site), with permission to see only the files the plugin creates. Everything Dropbox and S3 storage do works here too: automatic uploads in 8 MB pieces, keep the last 1 to 100, Test connection, the list of backups in the cloud with download and delete, Send by hand, Cancel, and transfers that carry on after a reload.
-* Added: connecting goes through the plugin's sign-in service, which holds the secret key Google requires, first shows which site is asking, and brings you back to the Storage tab. It stores nothing, and backups never pass through it.
-* Added: an upload whose answer is lost on the way back, or that Google only partly takes, carries on from exactly where Google is up to, so a retry never sends a byte twice and never leaves two copies.
-* Added: a Google Drive tag on the Backups tab, and Google Drive in the finished-backup message and the email.
-* Security: the Google Drive tokens are stored encrypted like the other storage keys, and a restore keeps the site's own Google Drive connection.
 * Added: when this site's Dropbox folder is empty but backups were put one level up, at the top of the app folder, the list of backups in the cloud says so and how to make them show, instead of "No backups there yet."
-* Changed: older backups deleted from Google Drive to keep the number you chose are deleted for good, not moved to the Drive bin, where they would still count against your storage.
 * Changed: when Send test email fails, the message now includes the reason WordPress's mailer gave, such as an invalid From address or no way to reach a mail server.
 * Security: downloading a backup from the cloud is refused, like making or uploading one, while the backups folder can be fetched from the web.
 * Security: the check of whether the backups folder can be fetched from the web no longer counts a busy or failing server (HTTP 429 or 5xx) as proof that it can't; it asks again, and if the whole server is failing, it tries again in five minutes. It also follows redirects, so a folder served over https behind an http redirect is caught.
 * Security: on Windows, a WPCB_BACKUP_DIR whose location PHP isn't allowed to look up because of a short folder name such as PROGRA~1 is no longer accepted as outside the web root.
 * Fixed: a place ticked under "Send new backups to" that is no longer connected was skipped without a word, and with "keep a copy on this server" off, the local copy could then be removed. It is now reported as a failed upload, and the local copy is kept.
 * Fixed: keep-the-last-N could delete a backup sent by hand if the same backup had also been uploaded automatically.
-* Fixed: a file of the same name and size already in Dropbox or Google Drive was taken for the backup being uploaded. Now its content must match too.
+* Fixed: a file of the same name and size already in Dropbox was taken for the backup being uploaded. Now its content must match too.
 * Fixed: an S3 upload whose final answer was lost on the way back was reported as failed (NoSuchUpload), although the backup had arrived.
 * Fixed: a blank S3 region made an invalid address such as s3..amazonaws.com; the service's usual region, shown greyed out in the field, is now used.
 * Fixed: a restore could start while a backup was running, and a backup while a restore was, so the backup could catch the site half-restored. Each now waits for the other. A backup whose page was left part-way stops there and no longer holds a restore up after a few minutes; if its page comes back once a restore has started, it stops cleanly instead of carrying on.
@@ -281,7 +255,7 @@ Cloudflare's [terms](https://www.cloudflare.com/terms/) and [privacy policy](htt
 == Upgrade Notice ==
 
 = 1.9.0 =
-Adds Google Drive as a place to keep cloud copies of your backups, alongside S3-compatible storage and Dropbox, and fixes cloud storage and backup-folder privacy issues - recommended for every site.
+Fixes cloud storage, backup-folder privacy and backup/restore overlap issues - recommended for every site.
 
 = 1.8.0 =
 Adds cloud copies of your backups on Amazon S3, S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi) and Dropbox, with a way to bring them back to restore.

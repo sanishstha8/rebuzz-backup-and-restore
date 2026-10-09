@@ -967,7 +967,8 @@ jQuery(function ($) {
 
     $('#wpcb-gdrive-disconnect').on('click', function () {
 
-        if (!window.confirm(wpcb.i18n.gdrive_disconnect_confirm)) {
+        // The text is on the button: Google Drive's words stay off the page while Drive is hidden.
+        if (!window.confirm($(this).data('confirm'))) {
             return;
         }
 

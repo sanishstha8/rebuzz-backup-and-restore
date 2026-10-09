@@ -218,6 +218,9 @@ WPCB_Storage::clearStaleParts();
 
             </div>
 
+            <?php // Google Drive shows only where its sign-in service is set (WPCB_GDRIVE_RELAY). ?>
+            <?php if ($gdriveRelay !== '') : ?>
+
             <div class="wpcb-card" id="wpcb-gdrive-card">
 
                 <h2>
@@ -232,11 +235,7 @@ WPCB_Storage::clearStaleParts();
                     <div class="notice notice-error inline"><p><?php echo esc_html($gdriveNotice['text']); ?></p></div>
                 <?php endif; ?>
 
-                <?php if ($gdriveRelay === '') : ?>
-
-                    <p><?php esc_html_e('Google Drive needs this plugin\'s sign-in service, which isn\'t set in this copy of the plugin.', 'rebuzz-backup-and-restore'); ?></p>
-
-                <?php elseif (!$gdrive) : ?>
+                <?php if (!$gdrive) : ?>
 
                     <p><?php esc_html_e('Backups go into a folder in your Google Drive. The plugin can only see the files it creates there - nothing else in your Drive.', 'rebuzz-backup-and-restore'); ?></p>
 
@@ -294,13 +293,15 @@ WPCB_Storage::clearStaleParts();
 
                     <div class="wpcb-action">
                         <button type="button" id="wpcb-gdrive-test" class="button"><?php esc_html_e('Test connection', 'rebuzz-backup-and-restore'); ?></button>
-                        <button type="button" id="wpcb-gdrive-disconnect" class="button button-link-delete"><?php esc_html_e('Disconnect', 'rebuzz-backup-and-restore'); ?></button>
+                        <button type="button" id="wpcb-gdrive-disconnect" class="button button-link-delete" data-confirm="<?php esc_attr_e('Disconnect Google Drive? Backups already there stay in your Drive.', 'rebuzz-backup-and-restore'); ?>"><?php esc_html_e('Disconnect', 'rebuzz-backup-and-restore'); ?></button>
                         <span id="wpcb-gdrive-status" class="wpcb-loading" aria-live="polite"></span>
                     </div>
 
                 <?php endif; ?>
 
             </div>
+
+            <?php endif; ?>
 
             </div>
 

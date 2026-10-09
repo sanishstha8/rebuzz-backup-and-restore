@@ -13,7 +13,7 @@ It does four things and stores nothing:
 
 Backups never pass through it. The plugin talks to `www.googleapis.com` directly for files.
 
-The plugin points at `https://rebuzz-gdrive.xthasanish44.workers.dev` (`WPCB_GDRIVE_RELAY` in the main plugin file). A site can override that in `wp-config.php`.
+The plugin finds the relay through `WPCB_GDRIVE_RELAY`. Until the constant is set, Google Drive is hidden everywhere in the plugin. 1.9.0 ships with Drive hidden, because this Worker wasn't deployed yet. A site can set the constant in `wp-config.php`, and the main plugin file sets it by default once step 4 below is done.
 
 ## One-time setup
 
@@ -56,7 +56,19 @@ Check it: `https://rebuzz-gdrive.xthasanish44.workers.dev/` should forward to th
 
 ### 3. Try it
 
-On a test site, open **ReBuzz Backup → Storage → Connect Google Drive**. You should see the relay's confirmation page naming your site, then Google's consent screen, then the Storage tab saying *Connected*.
+On a test site, add `define('WPCB_GDRIVE_RELAY', 'https://rebuzz-gdrive.xthasanish44.workers.dev');` to `wp-config.php`, then open **ReBuzz Backup → Storage → Connect Google Drive**. You should see the relay's confirmation page naming your site, then Google's consent screen, then the Storage tab saying *Connected*.
+
+### 4. Turn it on in the plugin (1.9.1)
+
+1. In `rebuzz-backup-and-restore.php`, put back the default under the Dropbox app key:
+
+   ```php
+   if (!defined('WPCB_GDRIVE_RELAY')) {
+       define('WPCB_GDRIVE_RELAY', 'https://rebuzz-gdrive.xthasanish44.workers.dev');
+   }
+   ```
+
+2. Put Google Drive back into `readme.txt`. The text removed for 1.9.0 is in commit `c76e084`: the description bullet, two FAQs, the storage-keys FAQ, the *Google Drive* and *ReBuzz Google Drive sign-in service* entries under External services, and screenshot 7. Add a changelog entry.
 
 ## Later: your own domain
 

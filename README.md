@@ -11,7 +11,7 @@ Complete WordPress Backup & Restore Solution.
 | --- | --- |
 | `rebuzz-backup-and-restore/` | Plugin source. This folder is what ships. |
 | `_dev-tools/wpcb-diagnose.php` | Standalone restore diagnostic. Not shipped. |
-| `gdrive-relay/` | Cloudflare Worker holding the Google client secret for Google Drive sign-in (1.9.0+). Not shipped; deploy steps in its README. |
+| `gdrive-relay/` | Cloudflare Worker holding the Google client secret for Google Drive sign-in. Not shipped. Google Drive stays hidden in the plugin until this is deployed (planned for 1.9.1); deploy steps are in its README. |
 
 ## Branches
 
