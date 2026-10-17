@@ -53,7 +53,49 @@ jQuery(function ($) {
             .addClass(noticeClass)
             .append($message);
 
+        // A failed backup or restore says where to get help.
+        if (noticeClass === 'notice-error' && $container.is('#wpcb-status, #wpcb-restore-status')) {
+            $notice.append($('<p></p>').html(wpcb.help_html));
+        }
+
         $container.empty().append($notice);
+    }
+
+    /**
+     * Asks for a rating after a backup or restore finished cleanly. The
+     * dialog is only on the page while WPCB_Feedback::due() says so, and
+     * goes once answered. then() runs when it closes, or straight away.
+     */
+    function askForReview(kind, then) {
+
+        var dialog = document.getElementById('wpcb-review');
+
+        if (!dialog || typeof dialog.showModal !== 'function') {
+            then();
+            return;
+        }
+
+        var $dialog = $(dialog);
+
+        $dialog.find('[data-kind]').hide().filter('[data-kind="' + kind + '"]').show();
+
+        // Escape and the close button count as "Maybe later".
+        $dialog.on('click', '[data-answer]', function () {
+            dialog.close($(this).data('answer'));
+        });
+
+        $dialog.one('close', function () {
+
+            $.post(wpcb.ajax_url, {
+                action: 'wpcb_review',
+                nonce: wpcb.nonce,
+                answer: dialog.returnValue || 'later'
+            }).always(then);
+
+            $dialog.remove();
+        });
+
+        dialog.showModal();
     }
 
     /** Updates progress bar. */
@@ -160,7 +202,13 @@ jQuery(function ($) {
 
                     setTimeout(function () {
 
-                        location.reload();
+                        if (noticeClass === 'notice-success') {
+                            askForReview('backup', function () {
+                                location.reload();
+                            });
+                        } else {
+                            location.reload();
+                        }
 
                     }, 1000);
 
@@ -201,12 +249,13 @@ jQuery(function ($) {
 
                 $('#wpcb-loading').hide();
 
-                $('#wpcb-status').html(
-                    '<div class="notice notice-error">' +
-                    '<p>AJAX request failed after ' + MAX_STEP_RETRIES + ' retries. ' +
+                renderNotice(
+                    $('#wpcb-status'),
+                    'notice-error',
+                    'AJAX request failed after ' + MAX_STEP_RETRIES + ' retries. ' +
                     'The backup may still be running on the server - check backup.log, ' +
-                    'or refresh this page and check Backup History before starting a new one.</p>' +
-                    '</div>'
+                    'or refresh this page and check Backup History before starting a new one.',
+                    false
                 );
 
             }
@@ -296,11 +345,7 @@ jQuery(function ($) {
 
                 $('#wpcb-loading').hide();
 
-                $('#wpcb-status').html(
-                    '<div class="notice notice-error">' +
-                    '<p>Unable to contact server.</p>' +
-                    '</div>'
-                );
+                renderNotice($('#wpcb-status'), 'notice-error', wpcb.i18n.no_server, false);
 
             }
 
@@ -416,6 +461,12 @@ jQuery(function ($) {
                         )
                     );
 
+                    if (noticeClass === 'notice-success') {
+                        setTimeout(function () {
+                            askForReview('restore', function () {});
+                        }, 1500);
+                    }
+
                     return;
                 }
 
@@ -451,12 +502,13 @@ jQuery(function ($) {
 
                 $('#wpcb-restore-backup').prop('disabled', false);
 
-                $('#wpcb-restore-status').html(
-                    '<div class="notice notice-error">' +
-                    '<p>AJAX request failed after ' + MAX_STEP_RETRIES + ' retries. ' +
+                renderNotice(
+                    $('#wpcb-restore-status'),
+                    'notice-error',
+                    'AJAX request failed after ' + MAX_STEP_RETRIES + ' retries. ' +
                     'The restore may still be running on the server - check restore.log ' +
-                    'before starting a new attempt.</p>' +
-                    '</div>'
+                    'before starting a new attempt.',
+                    false
                 );
 
             }
@@ -555,16 +607,56 @@ jQuery(function ($) {
 
                 $('#wpcb-restore-loading').hide();
 
-                $('#wpcb-restore-status').html(
-                    '<div class="notice notice-error">' +
-                    '<p>Unable to contact server.</p>' +
-                    '</div>'
-                );
+                renderNotice($('#wpcb-restore-status'), 'notice-error', wpcb.i18n.no_server, false);
 
             }
 
         });
 
+    });
+
+    /** Settings tab: puts the system information on the clipboard, one "name: value" line per row. */
+    $('#wpcb-copy-system-info').on('click', function () {
+
+        var text = $('#wpcb-system-info tr').map(function () {
+            return $(this).find('th').text().trim() + ': ' + $(this).find('td').text().trim();
+        }).get().join('\n');
+
+        var $status = $('#wpcb-copy-system-info-status').removeClass('is-error');
+
+        function copied() {
+            $status.text(wpcb.i18n.copied);
+        }
+
+        // The clipboard API needs HTTPS; older browsers and plain-HTTP sites take the fallback.
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(copied, fallback);
+        } else {
+            fallback();
+        }
+
+        function fallback() {
+
+            var $area = $('<textarea readonly></textarea>').val(text).css({ position: 'fixed', top: 0, opacity: 0 }).appendTo('body');
+
+            $area[0].select();
+
+            var ok = false;
+
+            try {
+                ok = document.execCommand('copy');
+            } catch (e) {
+                ok = false;
+            }
+
+            $area.remove();
+
+            if (ok) {
+                copied();
+            } else {
+                $status.addClass('is-error').text(wpcb.i18n.copy_failed);
+            }
+        }
     });
 
     /** Deletes a backup. */

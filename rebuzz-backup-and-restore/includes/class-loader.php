@@ -38,6 +38,7 @@ class WPCB_Loader
         require_once WPCB_PATH . 'includes/class-remote-dropbox.php';
         require_once WPCB_PATH . 'includes/class-remote-gdrive.php';
         require_once WPCB_PATH . 'includes/class-storage.php';
+        require_once WPCB_PATH . 'includes/class-feedback.php';
 
         /*
          * Holds WordPress's auto-updater off while a restore is
@@ -70,5 +71,7 @@ class WPCB_Loader
         new WPCB_Scheduler();
 
         new WPCB_Storage();
+
+        new WPCB_Feedback();
     }
 }

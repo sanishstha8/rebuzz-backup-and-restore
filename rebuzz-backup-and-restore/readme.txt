@@ -133,6 +133,8 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 == Changelog ==
 
 = 1.9.0 =
+* Added: Help and feedback on the Settings tab - a link to the support forum, what to include in a post, and a Copy button for the system information, which now also lists the PHP memory and time limits, the web server and whether the site is a multisite network. A failed backup or restore links to the forum too.
+* Added: after a backup or restore you started finishes without problems, the plugin asks once whether you'd rate it on WordPress.org. "Maybe later" waits 30 days before asking again; rating it or "I already did" ends it. A restore keeps your answer.
 * Added: when this site's Dropbox folder is empty but backups were put one level up, at the top of the app folder, the list of backups in the cloud says so and how to make them show, instead of "No backups there yet."
 * Changed: when Send test email fails, the message now includes the reason WordPress's mailer gave, such as an invalid From address or no way to reach a mail server.
 * Security: downloading a backup from the cloud is refused, like making or uploading one, while the backups folder can be fetched from the web.
@@ -142,6 +144,7 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 * Fixed: keep-the-last-N could delete a backup sent by hand if the same backup had also been uploaded automatically.
 * Fixed: a file of the same name and size already in Dropbox was taken for the backup being uploaded. Now its content must match too.
 * Fixed: an S3 upload whose final answer was lost on the way back was reported as failed (NoSuchUpload), although the backup had arrived.
+* Fixed: sending a backup to Backblaze B2 could fail at the end with "the secret access key is wrong" (SignatureDoesNotMatch) although Test connection passed. Every upload request now says what it carries, so the service no longer reads it as a web form.
 * Fixed: a blank S3 region made an invalid address such as s3..amazonaws.com; the service's usual region, shown greyed out in the field, is now used.
 * Fixed: a restore could start while a backup was running, and a backup while a restore was, so the backup could catch the site half-restored. Each now waits for the other. A backup whose page was left part-way stops there and no longer holds a restore up after a few minutes; if its page comes back once a restore has started, it stops cleanly instead of carrying on.
 

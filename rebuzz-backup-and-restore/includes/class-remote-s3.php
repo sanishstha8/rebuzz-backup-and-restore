@@ -134,7 +134,13 @@ class WPCB_Remote_S3 extends WPCB_Remote
 
     /**
      * Signs and sends one request. Only host and the x-amz-* headers are
-     * signed; anything in $extraHeaders (Range) travels unsigned.
+     * signed; anything in $extraHeaders (Range, Content-Type) travels unsigned.
+     *
+     * A POST or PUT always names its Content-Type. Otherwise WordPress's
+     * HTTP API sends application/x-www-form-urlencoded, and a service that
+     * reads such a body as form fields (Backblaze B2) counts them into the
+     * signed request, so completing a multipart upload fails with
+     * SignatureDoesNotMatch although the connection test passes.
      *
      * @return array|WP_Error Response array for a 2xx, WP_Error otherwise.
      */
@@ -198,6 +204,10 @@ class WPCB_Remote_S3 extends WPCB_Remote
                 true),
             true),
         true);
+
+        if (in_array($method, ['POST', 'PUT'], true) && !isset($extraHeaders['Content-Type'])) {
+            $extraHeaders['Content-Type'] = 'application/octet-stream';
+        }
 
         $headers = array_merge($extraHeaders, [
             'x-amz-content-sha256' => $payloadHash,
@@ -303,7 +313,8 @@ class WPCB_Remote_S3 extends WPCB_Remote
 
         if (empty($session['upload_id'])) {
 
-            $started = $this->send('POST', $key, ['uploads' => '']);
+            // Becomes the stored file's type.
+            $started = $this->send('POST', $key, ['uploads' => ''], '', ['Content-Type' => 'application/zip']);
 
             if (is_wp_error($started)) {
                 return $started;
@@ -356,7 +367,7 @@ class WPCB_Remote_S3 extends WPCB_Remote
 
         $session['completing'] = true;
 
-        $completed = $this->send('POST', $key, ['uploadId' => $session['upload_id']], $xml, [], 300);
+        $completed = $this->send('POST', $key, ['uploadId' => $session['upload_id']], $xml, ['Content-Type' => 'application/xml'], 300);
 
         if (is_wp_error($completed)) {
 

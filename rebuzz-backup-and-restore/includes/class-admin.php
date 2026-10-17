@@ -242,6 +242,15 @@ class WPCB_Admin
                 'ajax_url' => admin_url('admin-ajax.php'),
                 'nonce'    => wp_create_nonce('wpcb_backup'),
                 'permalinks_url' => admin_url('options-permalink.php'),
+                // Shown under a failed backup or restore.
+                'help_html' => wp_kses(
+                    sprintf(
+                        /* translators: %s: URL of the plugin's support forum */
+                        __('Need a hand with this? <a href="%s" target="_blank" rel="noopener noreferrer">Ask on the support forum</a> - the Settings tab lists what to include.', 'rebuzz-backup-and-restore'),
+                        esc_url(WPCB_Feedback::SUPPORT_URL)
+                    ),
+                    ['a' => ['href' => [], 'target' => [], 'rel' => []]]
+                ),
                 'i18n' => [
                     'no_backups' => __('No backups yet. Backups you create, or ZIPs you upload to the backup folder, appear here.', 'rebuzz-backup-and-restore'),
                     'permalinks' => __('One last step: open Permalink Settings. Opening that page rebuilds the link rules your plugins add, so no page shows "Page not found". You don\'t need to change anything there.', 'rebuzz-backup-and-restore'),
@@ -260,6 +269,8 @@ class WPCB_Admin
                     'cloud_delete_confirm' => __('Delete this backup from the cloud permanently? This cannot be undone.', 'rebuzz-backup-and-restore'),
                     'cancel_confirm' => __('Stop this transfer? The part already transferred is removed; you can start it again at any time.', 'rebuzz-backup-and-restore'),
                     'cancelling' => __('Stopping...', 'rebuzz-backup-and-restore'),
+                    'copied' => __('Copied.', 'rebuzz-backup-and-restore'),
+                    'copy_failed' => __('Your browser blocked copying. Select the table and copy it instead.', 'rebuzz-backup-and-restore'),
                 ],
             ]
         );
