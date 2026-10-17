@@ -4,7 +4,7 @@ Tags: backup, restore, migration, multisite, database
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.8.0
+Stable tag: 1.9.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,7 +20,7 @@ Most backup plugins assume the server will let them finish. On shared hosting it
 
 * **Chunked and resumable.** No single request has to finish the whole job, so execution-time and memory limits stop being the thing that decides whether your backup completes.
 * **Scheduled backups.** Daily or weekly at the hour you choose, running in the background with no browser open. The last few are kept and older ones deleted, and you can get an email when one fails - or after every run.
-* **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others) or to Dropbox, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
+* **Copies in the cloud.** Send backups to Amazon S3 or any S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others) or Dropbox, in 8 MB pieces that shared hosting can handle. Keep the last few there, and bring any of them back to restore - onto the same site or a brand-new one.
 * Files and the database dump are **SHA-256 checksummed** when the backup is written, then verified again before a restore is allowed near your live site. A damaged archive gets rejected instead of half-applied.
 * **Domain-safe restores.** Moving to a different URL rewrites hardcoded references in post content, GUIDs and serialized data. Your admin session and the site URL survive the process.
 * Backup too large to push through the browser? Drop the ZIP straight into `wp-content/uploads/rebuzz-backup-and-restore/backups/` over FTP. It turns up in the restore list on its own, with no size ceiling.
@@ -90,7 +90,7 @@ Use **Send test email** on the Schedule tab. If that email doesn't arrive either
 
 = Which cloud storage can I use? =
 
-Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi, or any other S3-compatible storage you give an endpoint for - and Dropbox. Set them up on the Storage tab; **Test connection** writes a small file and deletes it again, so you know uploads will work before the first backup. Google Drive is planned for a later version.
+Amazon S3 and services with the same API - Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi, or any other S3-compatible storage you give an endpoint for - and Dropbox. Set them up on the Storage tab; **Test connection** writes a small file and deletes it again, so you know uploads will work before the first backup.
 
 = Are my storage keys safe? =
 
@@ -131,6 +131,22 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 7. The Storage tab: S3-compatible storage and Dropbox, which backups to send, and the backups already in the cloud.
 
 == Changelog ==
+
+= 1.9.0 =
+* Added: Help and feedback on the Settings tab - a link to the support forum, what to include in a post, and a Copy button for the system information, which now also lists the PHP memory and time limits, the web server and whether the site is a multisite network. A failed backup or restore links to the forum too.
+* Added: after a backup or restore you started finishes without problems, the plugin asks once whether you'd rate it on WordPress.org. "Maybe later" waits 30 days before asking again; rating it or "I already did" ends it. A restore keeps your answer.
+* Added: when this site's Dropbox folder is empty but backups were put one level up, at the top of the app folder, the list of backups in the cloud says so and how to make them show, instead of "No backups there yet."
+* Changed: when Send test email fails, the message now includes the reason WordPress's mailer gave, such as an invalid From address or no way to reach a mail server.
+* Security: downloading a backup from the cloud is refused, like making or uploading one, while the backups folder can be fetched from the web.
+* Security: the check of whether the backups folder can be fetched from the web no longer counts a busy or failing server (HTTP 429 or 5xx) as proof that it can't; it asks again, and if the whole server is failing, it tries again in five minutes. It also follows redirects, so a folder served over https behind an http redirect is caught.
+* Security: on Windows, a WPCB_BACKUP_DIR whose location PHP isn't allowed to look up because of a short folder name such as PROGRA~1 is no longer accepted as outside the web root.
+* Fixed: a place ticked under "Send new backups to" that is no longer connected was skipped without a word, and with "keep a copy on this server" off, the local copy could then be removed. It is now reported as a failed upload, and the local copy is kept.
+* Fixed: keep-the-last-N could delete a backup sent by hand if the same backup had also been uploaded automatically.
+* Fixed: a file of the same name and size already in Dropbox was taken for the backup being uploaded. Now its content must match too.
+* Fixed: an S3 upload whose final answer was lost on the way back was reported as failed (NoSuchUpload), although the backup had arrived.
+* Fixed: sending a backup to Backblaze B2 could fail at the end with "the secret access key is wrong" (SignatureDoesNotMatch) although Test connection passed. Every upload request now says what it carries, so the service no longer reads it as a web form.
+* Fixed: a blank S3 region made an invalid address such as s3..amazonaws.com; the service's usual region, shown greyed out in the field, is now used.
+* Fixed: a restore could start while a backup was running, and a backup while a restore was, so the backup could catch the site half-restored. Each now waits for the other. A backup whose page was left part-way stops there and no longer holds a restore up after a few minutes; if its page comes back once a restore has started, it stops cleanly instead of carrying on.
 
 = 1.8.0 =
 * Added: cloud storage, on a new Storage tab. Backups can go to Amazon S3 and S3-compatible services (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi and others, signed with Signature V4) and to Dropbox (connected with a code you paste, into the plugin's own app folder). Test connection writes and deletes a small file.
@@ -240,6 +256,9 @@ Dropbox's [terms of service](https://www.dropbox.com/terms) and [privacy policy]
 * Initial submission to the WordPress Plugin Directory.
 
 == Upgrade Notice ==
+
+= 1.9.0 =
+Fixes cloud storage, backup-folder privacy and backup/restore overlap issues - recommended for every site.
 
 = 1.8.0 =
 Adds cloud copies of your backups on Amazon S3, S3-compatible storage (Backblaze B2, Cloudflare R2, DigitalOcean Spaces, Wasabi) and Dropbox, with a way to bring them back to restore.

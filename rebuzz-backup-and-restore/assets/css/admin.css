@@ -14,6 +14,7 @@
 .wpcb-header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     margin: 18px 0 14px;
 }
@@ -38,6 +39,14 @@
     border: 1px solid var(--wpcb-border);
     border-radius: 999px;
     padding: 1px 9px;
+}
+
+.wpcb-header-help {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    text-decoration: none;
 }
 
 .wpcb-wrap .nav-tab-wrapper {
@@ -93,6 +102,18 @@
 /* Cards of very different lengths: each only as tall as its content, not a mostly empty box. */
 .wpcb-grid-top {
     align-items: start;
+}
+
+/* Several cards sharing one grid column, one under another. */
+.wpcb-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+}
+
+.wpcb-stack > .wpcb-card {
+    margin: 0;
 }
 
 /* Summary tiles */
@@ -429,7 +450,92 @@
     margin-bottom: 20px;
 }
 
+/* Rating dialog, after a clean backup or restore */
+
+.wpcb-review {
+    position: relative;
+    box-sizing: border-box;
+    width: calc(100% - 32px);
+    max-width: 440px;
+    padding: 28px 28px 20px;
+    border: 0;
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .25);
+    text-align: center;
+}
+
+.wpcb-review::backdrop {
+    background: rgba(0, 0, 0, .45);
+}
+
+.wpcb-review h2 {
+    margin: 8px 0 10px;
+    font-size: 18px;
+}
+
+.wpcb-review p {
+    margin: 0 0 18px;
+    font-size: 14px;
+    color: #3c434a;
+}
+
+.wpcb-review-stars {
+    color: #dba617;
+}
+
+.wpcb-review-stars .dashicons {
+    width: 26px;
+    height: 26px;
+    font-size: 26px;
+}
+
+.wpcb-review-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 4px;
+    border: 0;
+    background: none;
+    color: var(--wpcb-muted);
+    cursor: pointer;
+}
+
+.wpcb-review-close:hover,
+.wpcb-review-close:focus {
+    color: #1d2327;
+}
+
+.wpcb-review-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px 12px;
+    margin-bottom: 18px;
+}
+
+.wpcb-review .wpcb-review-help {
+    margin: 0;
+    padding-top: 14px;
+    font-size: 13px;
+    color: var(--wpcb-muted);
+    border-top: 1px solid #f0f0f1;
+}
+
 /* Settings */
+
+.wpcb-help-list {
+    margin: 0 0 16px 18px;
+    list-style: disc;
+}
+
+.wpcb-help-actions .button .dashicons {
+    margin: 3px 2px 0 -2px;
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    color: #dba617;
+}
 
 .wpcb-card .form-table {
     margin-top: 0;

@@ -1663,7 +1663,13 @@ class WPCB_Restore_Job
     /** The cloud connection; the secrets are encrypted with this server's keys. */
     private static function cloudOptions()
     {
-        return [WPCB_Storage::OPTION, WPCB_Storage::SECRETS, WPCB_Storage::DROPBOX];
+        return [WPCB_Storage::OPTION, WPCB_Storage::SECRETS, WPCB_Storage::DROPBOX, WPCB_Storage::GDRIVE];
+    }
+
+    /** Answers given on this site that an older backup must not undo, such as "don't ask for a rating again". */
+    private static function keptOptions()
+    {
+        return [WPCB_Feedback::OPTION];
     }
 
     /** This plugin's options as they are now; absent ones are left out. */
@@ -1671,7 +1677,7 @@ class WPCB_Restore_Job
     {
         $captured = [];
 
-        foreach (array_merge(array_keys(self::trackingOptions()), self::cloudOptions()) as $option) {
+        foreach (array_merge(array_keys(self::trackingOptions()), self::cloudOptions(), self::keptOptions()) as $option) {
 
             $value = get_option($option, null);
 
@@ -1695,6 +1701,9 @@ class WPCB_Restore_Job
      * A cloud connection set up here is kept as it is: the backup's
      * secrets only decrypt with the keys of the server that saved them.
      * A site without one takes the backup's, as before.
+     *
+     * The kept options are put back when this site had them, and
+     * otherwise left as the backup had them.
      */
     private function restorePreservedPluginOptions()
     {
@@ -1750,6 +1759,14 @@ class WPCB_Restore_Job
                     update_option($option, $captured[$option], false);
                     $kept[] = $option;
                 }
+            }
+        }
+
+        foreach (self::keptOptions() as $option) {
+
+            if (array_key_exists($option, $captured) && get_option($option, null) !== $captured[$option]) {
+                update_option($option, $captured[$option], false);
+                $kept[] = $option;
             }
         }
 

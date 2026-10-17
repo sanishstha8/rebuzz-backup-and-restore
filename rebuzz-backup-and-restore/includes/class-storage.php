@@ -8,8 +8,9 @@ if (!defined('ABSPATH')) {
 
 /**
  * Cloud storage: the settings on the Storage tab, the encrypted
- * credentials, sending finished backups to S3-compatible storage and
- * Dropbox, keeping the last N there, and bringing a backup back.
+ * credentials, sending finished backups to S3-compatible storage,
+ * Dropbox and Google Drive, keeping the last N there, and bringing a
+ * backup back.
  *
  * Credentials are encrypted with a key derived from the site's secret
  * keys in wp-config.php. wp-config.php is never part of a backup, but
@@ -21,6 +22,7 @@ class WPCB_Storage
     const OPTION = 'wpcb_storage';
     const SECRETS = 'wpcb_remote_secrets';
     const DROPBOX = 'wpcb_dropbox';
+    const GDRIVE = 'wpcb_gdrive';
     const UPLOADED = 'wpcb_remote_uploaded';
     const SENT = 'wpcb_remote_sent';
 
@@ -36,6 +38,7 @@ class WPCB_Storage
     public function __construct()
     {
         add_action('admin_init', [__CLASS__, 'registerSetting']);
+        add_action('admin_init', [__CLASS__, 'gdriveReturn']);
 
         $actions = [
             'wpcb_s3_test'            => 's3Test',
@@ -43,6 +46,9 @@ class WPCB_Storage
             'wpcb_dropbox_finish'     => 'dropboxFinish',
             'wpcb_dropbox_disconnect' => 'dropboxDisconnect',
             'wpcb_dropbox_test'       => 'dropboxTest',
+            'wpcb_gdrive_start'       => 'gdriveStart',
+            'wpcb_gdrive_disconnect'  => 'gdriveDisconnect',
+            'wpcb_gdrive_test'        => 'gdriveTest',
             'wpcb_remote_list'        => 'remoteList',
             'wpcb_remote_delete'      => 'remoteDelete',
             'wpcb_transfer_start'     => 'transferStart',
@@ -71,7 +77,7 @@ class WPCB_Storage
         $site = trim(preg_replace('/[^a-z0-9.]+/', '-', strtolower(preg_replace('#^https?://#', '', home_url()))), '-');
 
         return [
-            'send'       => ['s3' => false, 'dropbox' => false],
+            'send'       => ['s3' => false, 'dropbox' => false, 'gdrive' => false],
             'which'      => 'scheduled',
             'keep_local' => true,
             's3'         => [
@@ -88,6 +94,10 @@ class WPCB_Storage
                 'folder' => $site,
                 'keep'   => 10,
             ],
+            'gdrive'     => [
+                'folder' => 'ReBuzz Backups/' . $site,
+                'keep'   => 10,
+            ],
         ];
     }
 
@@ -97,7 +107,7 @@ class WPCB_Storage
         $saved = is_array($saved) ? $saved : [];
         $defaults = self::defaults();
 
-        foreach (['send', 's3', 'dropbox'] as $group) {
+        foreach (['send', 's3', 'dropbox', 'gdrive'] as $group) {
             $saved[$group] = array_merge($defaults[$group], isset($saved[$group]) && is_array($saved[$group]) ? $saved[$group] : []);
         }
 
@@ -126,15 +136,20 @@ class WPCB_Storage
             self::setSecret('s3_secret', $secret);
         }
 
-        $dropbox = isset($input['dropbox']) && is_array($input['dropbox']) ? $input['dropbox'] : [];
+        // Dropbox's and Google Drive's fields are only on the form while connected; otherwise keep what was saved.
+        foreach (['dropbox', 'gdrive'] as $id) {
 
-        // Dropbox's fields are only on the form while it's connected; otherwise keep what was saved.
-        $clean['dropbox']['folder'] = self::sanitizeFolder($dropbox['folder'] ?? $old['dropbox']['folder']);
-        $clean['dropbox']['keep'] = min(100, max(1, (int) ($dropbox['keep'] ?? $old['dropbox']['keep'])));
+            $fields = isset($input[$id]) && is_array($input[$id]) ? $input[$id] : [];
+            $folder = self::sanitizeFolder($fields['folder'] ?? $old[$id]['folder']);
+
+            // Dropbox's '' is the app folder itself; Google Drive's would be the top of My Drive, among the user's own files.
+            $clean[$id]['folder'] = ($folder !== '' || $id === 'dropbox') ? $folder : $clean[$id]['folder'];
+            $clean[$id]['keep'] = min(100, max(1, (int) ($fields['keep'] ?? $old[$id]['keep'])));
+        }
 
         $send = isset($input['send']) && is_array($input['send']) ? $input['send'] : [];
 
-        $clean['send'] = ['s3' => !empty($send['s3']), 'dropbox' => !empty($send['dropbox'])];
+        $clean['send'] = ['s3' => !empty($send['s3']), 'dropbox' => !empty($send['dropbox']), 'gdrive' => !empty($send['gdrive'])];
         $clean['which'] = ($input['which'] ?? '') === 'all' ? 'all' : 'scheduled';
         $clean['keep_local'] = !empty($input['keep_local']);
 
@@ -237,54 +252,66 @@ class WPCB_Storage
         return !empty(self::secrets()[$name]) && self::secret($name) === '';
     }
 
-    public static function dropboxAuth()
+    /*
+     * Dropbox and Google Drive sign in the same way: the refresh and
+     * access tokens are secrets named "<id>_refresh" and "<id>_access",
+     * and the expiry and account name sit in the service's own option.
+     */
+
+    private static function oauthOption($id)
     {
-        $meta = get_option(self::DROPBOX, []);
+        return $id === 'gdrive' ? self::GDRIVE : self::DROPBOX;
+    }
+
+    /** @param string $id 'dropbox' or 'gdrive'. */
+    public static function oauthAuth($id)
+    {
+        $meta = get_option(self::oauthOption($id), []);
 
         return [
-            'refresh' => self::secret('dropbox_refresh'),
-            'access'  => self::secret('dropbox_access'),
+            'refresh' => self::secret($id . '_refresh'),
+            'access'  => self::secret($id . '_access'),
             'expires' => (int) (is_array($meta) ? ($meta['expires'] ?? 0) : 0),
         ];
     }
 
     /** $refresh null keeps the saved refresh token. */
-    public static function saveDropboxTokens($refresh, $access, $expires)
+    public static function saveTokens($id, $refresh, $access, $expires)
     {
         if ($refresh !== null) {
-            self::setSecret('dropbox_refresh', $refresh);
+            self::setSecret($id . '_refresh', $refresh);
         }
 
-        self::setSecret('dropbox_access', $access);
+        self::setSecret($id . '_access', $access);
 
-        $meta = get_option(self::DROPBOX, []);
+        $meta = get_option(self::oauthOption($id), []);
         $meta = is_array($meta) ? $meta : [];
         $meta['expires'] = (int) $expires;
 
-        update_option(self::DROPBOX, $meta, false);
+        update_option(self::oauthOption($id), $meta, false);
     }
 
-    public static function saveDropboxAccount($account)
+    public static function saveAccount($id, $account)
     {
-        $meta = get_option(self::DROPBOX, []);
+        $meta = get_option(self::oauthOption($id), []);
         $meta = is_array($meta) ? $meta : [];
         $meta['account'] = (string) $account;
 
-        update_option(self::DROPBOX, $meta, false);
+        update_option(self::oauthOption($id), $meta, false);
     }
 
-    public static function dropboxAccount()
+    public static function account($id)
     {
-        $meta = get_option(self::DROPBOX, []);
+        $meta = get_option(self::oauthOption($id), []);
 
         return is_array($meta) ? (string) ($meta['account'] ?? '') : '';
     }
 
-    private static function forgetDropbox()
+    private static function forgetOAuth($id)
     {
-        self::setSecret('dropbox_refresh', '');
-        self::setSecret('dropbox_access', '');
-        delete_option(self::DROPBOX);
+        self::setSecret($id . '_refresh', '');
+        self::setSecret($id . '_access', '');
+        delete_option(self::oauthOption($id));
     }
 
     /* Destinations */
@@ -316,13 +343,31 @@ class WPCB_Storage
                 : null;
         }
 
+        if ($id === 'gdrive') {
+            return WPCB_Remote_GDrive::relay() !== '' && self::secret('gdrive_refresh') !== ''
+                ? new WPCB_Remote_GDrive($settings['gdrive']['folder'])
+                : null;
+        }
+
         return null;
+    }
+
+    /** Every destination's ID, in the order they're shown. Google Drive only where its sign-in service is set. */
+    public static function ids()
+    {
+        return WPCB_Remote_GDrive::relay() !== '' ? ['s3', 'dropbox', 'gdrive'] : ['s3', 'dropbox'];
     }
 
     /** @return array<string, WPCB_Remote> Every destination that's set up, by ID. */
     public static function remotes()
     {
-        return array_filter(['s3' => self::remote('s3'), 'dropbox' => self::remote('dropbox')]);
+        $remotes = [];
+
+        foreach (self::ids() as $id) {
+            $remotes[$id] = self::remote($id);
+        }
+
+        return array_filter($remotes);
     }
 
     public static function label($id)
@@ -333,10 +378,24 @@ class WPCB_Storage
             return $remote->label();
         }
 
-        return $id === 'dropbox' ? 'Dropbox' : __('S3 storage', 'rebuzz-backup-and-restore');
+        return $id === 's3' ? __('S3 storage', 'rebuzz-backup-and-restore') : self::shortLabel($id);
     }
 
-    /** Destinations a finished backup goes to, per the Storage tab. */
+    /** The name on tags, e.g. on the Backups tab. */
+    public static function shortLabel($id)
+    {
+        $labels = ['s3' => 'S3', 'dropbox' => 'Dropbox', 'gdrive' => 'Google Drive'];
+
+        return $labels[$id] ?? $id;
+    }
+
+    /**
+     * Destinations a finished backup goes to, per the Storage tab -
+     * including one ticked but no longer set up (disconnected, or its
+     * access unreadable after the secret keys changed). That one then
+     * fails in uploadStep(), so it's reported, and the local copy is kept
+     * rather than removed with a copy missing.
+     */
     public static function plannedUploads(array $jobState)
     {
         $settings = self::settings();
@@ -345,7 +404,7 @@ class WPCB_Storage
             return [];
         }
 
-        return array_values(array_filter(array_keys(self::remotes()), function ($id) use ($settings) {
+        return array_values(array_filter(self::ids(), function ($id) use ($settings) {
             return !empty($settings['send'][$id]);
         }));
     }
@@ -389,9 +448,11 @@ class WPCB_Storage
         self::setUploaded($id, array_merge(self::uploaded($id), [$name]));
     }
 
+    /** Sent by hand: off the automatic list too, if it was uploaded automatically before. */
     private static function rememberSent($id, $name)
     {
         self::setNames(self::SENT, $id, array_merge(self::names(self::SENT, $id), [$name]));
+        self::setUploaded($id, array_diff(self::uploaded($id), [$name]));
     }
 
     private static function forget($id, $name)
@@ -409,7 +470,7 @@ class WPCB_Storage
     /** Destination IDs a local backup is also in, as far as this site knows. */
     public static function uploadedTo($name)
     {
-        return array_values(array_filter(['s3', 'dropbox'], function ($id) use ($name) {
+        return array_values(array_filter(self::ids(), function ($id) use ($name) {
             return self::isOurs($id, $name);
         }));
     }
@@ -432,7 +493,9 @@ class WPCB_Storage
             return 0;
         }
 
-        $present = array_values(array_intersect(self::uploaded($id), array_column($listed, 'name')));
+        // Not one also sent by hand: 1.8.0 left those on both lists.
+        $automatic = array_diff(self::uploaded($id), self::names(self::SENT, $id));
+        $present = array_values(array_intersect($automatic, array_column($listed, 'name')));
 
         rsort($present, SORT_STRING);
 
@@ -496,6 +559,8 @@ class WPCB_Storage
         if ($data === '' && $transfer['offset'] < $size) {
             return new WP_Error('wpcb_transfer', __('The backup file could not be read.', 'rebuzz-backup-and-restore'));
         }
+
+        $remote->setSource($path);
 
         $sent = $remote->uploadChunk($transfer['session'], $name, $data, (int) $transfer['offset'], (int) $size);
 
@@ -612,7 +677,8 @@ class WPCB_Storage
         $logger = new WPCB_Logger('backup');
 
         if ($remote === null) {
-            $up['results'][$id] = ['ok' => false, 'error' => __('it is no longer set up.', 'rebuzz-backup-and-restore')];
+            $logger->log('Not uploaded to ' . self::label($id) . ': it is ticked on the Storage tab but no longer connected or set up.');
+            $up['results'][$id] = ['ok' => false, 'error' => __('it is ticked on the Storage tab but no longer connected or set up.', 'rebuzz-backup-and-restore')];
             array_shift($up['queue']);
             $job->update(['upload' => $up]);
             return false;
@@ -840,7 +906,7 @@ class WPCB_Storage
             $remote->revoke();
         }
 
-        self::forgetDropbox();
+        self::forgetOAuth('dropbox');
 
         wp_send_json_success();
     }
@@ -853,6 +919,122 @@ class WPCB_Storage
 
         if ($remote === null) {
             wp_send_json_error(__('Dropbox isn\'t connected.', 'rebuzz-backup-and-restore'));
+        }
+
+        $result = $remote->test();
+
+        is_wp_error($result) ? wp_send_json_error($result->get_error_message()) : wp_send_json_success($result);
+    }
+
+    /**
+     * Starts connecting Google Drive: a PKCE verifier and a state kept
+     * for this user, and the relay's address to go to. Google comes
+     * back to the Storage tab, where gdriveReturn() finishes.
+     */
+    public function gdriveStart()
+    {
+        self::check();
+
+        if (WPCB_Remote_GDrive::relay() === '') {
+            wp_send_json_error(__('This copy of the plugin has no Google Drive sign-in service set.', 'rebuzz-backup-and-restore'));
+        }
+
+        $verifier = rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
+        $state = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+
+        set_transient('wpcb_gdrive_signin_' . get_current_user_id(), ['verifier' => $verifier, 'state' => $state], 30 * MINUTE_IN_SECONDS);
+
+        $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+
+        wp_send_json_success(['url' => WPCB_Remote_GDrive::startUrl(admin_url('admin.php?page=wpcb-storage'), $state, $challenge)]);
+    }
+
+    /**
+     * Google, through the relay, back on the Storage tab with a code (or
+     * an error) and the state from gdriveStart(). The state - random,
+     * kept for this user only, used once - is what proves this user
+     * started the sign-in, so it stands in for a nonce here.
+     */
+    public static function gdriveReturn()
+    {
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended -- checked against the state saved for this user, see above.
+        if (!isset($_GET['wpcb_gdrive_state']) || ($_GET['page'] ?? '') !== 'wpcb-storage' || !current_user_can('manage_options')) {
+            return;
+        }
+
+        $state = sanitize_text_field(wp_unslash($_GET['wpcb_gdrive_state']));
+        $code = sanitize_text_field(wp_unslash($_GET['wpcb_gdrive_code'] ?? ''));
+        $error = sanitize_key(wp_unslash($_GET['wpcb_gdrive_error'] ?? ''));
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+        $key = 'wpcb_gdrive_signin_' . get_current_user_id();
+        $saved = get_transient($key);
+
+        // A sign-in still in progress stays usable: a stray link must not cancel it.
+        if (!is_array($saved) || !hash_equals((string) ($saved['state'] ?? ''), $state)) {
+            $result = new WP_Error('wpcb_gdrive', __('Google Drive was not connected: this sign-in was not started here, or took longer than 30 minutes. Click Connect Google Drive again.', 'rebuzz-backup-and-restore'));
+        } else {
+
+            delete_transient($key);
+
+            if ($error !== '' || $code === '') {
+                $result = new WP_Error('wpcb_gdrive', $error === 'access_denied'
+                    ? __('Google Drive was not connected: access was not allowed on Google\'s page.', 'rebuzz-backup-and-restore')
+                    /* translators: %s: error code from Google, e.g. "server_error" */
+                    : sprintf(__('Google Drive was not connected: Google answered "%s".', 'rebuzz-backup-and-restore'), $error));
+            } else {
+                $result = WPCB_Remote_GDrive::connect($code, (string) $saved['verifier']);
+            }
+        }
+
+        set_transient('wpcb_gdrive_notice_' . get_current_user_id(), is_wp_error($result)
+            ? ['ok' => false, 'text' => $result->get_error_message()]
+            /* translators: %s: Google account, e.g. "Jane Doe (jane@example.com)" */
+            : ['ok' => true, 'text' => sprintf(__('Connected to the Google Drive of %s.', 'rebuzz-backup-and-restore'), $result)], 5 * MINUTE_IN_SECONDS);
+
+        // Without the code in the address, so a reload doesn't try it again.
+        wp_safe_redirect(admin_url('admin.php?page=wpcb-storage'));
+        exit;
+    }
+
+    /** The outcome of connecting Google Drive, shown once. @return array{ok: bool, text: string}|null */
+    public static function gdriveNotice()
+    {
+        $key = 'wpcb_gdrive_notice_' . get_current_user_id();
+        $notice = get_transient($key);
+
+        if (!is_array($notice)) {
+            return null;
+        }
+
+        delete_transient($key);
+
+        return $notice;
+    }
+
+    public function gdriveDisconnect()
+    {
+        self::check();
+
+        $remote = self::remote('gdrive');
+
+        if ($remote instanceof WPCB_Remote_GDrive) {
+            $remote->revoke();
+        }
+
+        self::forgetOAuth('gdrive');
+
+        wp_send_json_success();
+    }
+
+    public function gdriveTest()
+    {
+        self::check();
+
+        $remote = self::remote('gdrive');
+
+        if ($remote === null) {
+            wp_send_json_error(__('Google Drive isn\'t connected.', 'rebuzz-backup-and-restore'));
         }
 
         $result = $remote->test();
@@ -885,15 +1067,45 @@ class WPCB_Storage
 
         $dir = wpcb_backups_dir();
 
-        wp_send_json_success(array_map(function ($item) use ($id, $dir) {
-            return [
-                'name'  => $item['name'],
-                'size'  => size_format($item['size'], 2),
-                'date'  => $item['time'] ? wp_date(get_option('date_format') . ' ' . get_option('time_format'), $item['time']) : '',
-                'local' => is_file($dir . '/' . $item['name']),
-                'mine'  => self::isOurs($id, $item['name']),
-            ];
-        }, $items));
+        wp_send_json_success([
+            'items' => array_map(function ($item) use ($id, $dir) {
+                return [
+                    'name'  => $item['name'],
+                    'size'  => size_format($item['size'], 2),
+                    'date'  => $item['time'] ? wp_date(get_option('date_format') . ' ' . get_option('time_format'), $item['time']) : '',
+                    'local' => is_file($dir . '/' . $item['name']),
+                    'mine'  => self::isOurs($id, $item['name']),
+                ];
+            }, $items),
+            'hint'  => $items ? '' : self::misplacedHint($id, $remote),
+        ]);
+    }
+
+    /**
+     * For an empty folder: where backups put there by hand one level too
+     * high are, and how to make them show. '' when there are none.
+     */
+    private static function misplacedHint($id, WPCB_Remote $remote)
+    {
+        $count = count($remote->misplaced());
+
+        if ($count === 0) {
+            return '';
+        }
+
+        $folder = (string) self::settings()[$id]['folder'];
+
+        return sprintf(
+            /* translators: 1: number of backups, 2: folder name, e.g. "example.com" */
+            _n(
+                'This folder is empty, but %1$d backup is one level up, at the top of the app folder, where this site doesn\'t look. Move it into the %2$s folder, or clear the Folder setting above and save, to see it here.',
+                'This folder is empty, but %1$d backups are one level up, at the top of the app folder, where this site doesn\'t look. Move them into the %2$s folder, or clear the Folder setting above and save, to see them here.',
+                $count,
+                'rebuzz-backup-and-restore'
+            ),
+            $count,
+            $folder
+        );
     }
 
     public function remoteDelete()
@@ -966,6 +1178,11 @@ class WPCB_Storage
 
             if (is_file($local)) {
                 wp_send_json_error(__('That backup is already on this server - restore it from the Restore tab.', 'rebuzz-backup-and-restore'));
+            }
+
+            // A downloaded backup is as sensitive as one made here: never into a folder the web server hands out.
+            if (!wpcb_storage_is_private()) {
+                wp_send_json_error(wpcb_storage_insecure_reason());
             }
 
             $listed = $remote->listBackups();
@@ -1210,7 +1427,7 @@ class WPCB_Storage
         self::endTransfer($job, false, __('Cancelled. The part already transferred was removed.', 'rebuzz-backup-and-restore'), 'cancelled');
     }
 
-    /** Removes what an unfinished transfer left: a download's .part file, or a send's unfinished S3 upload (Dropbox drops its own). */
+    /** Removes what an unfinished transfer left: a download's .part file, or a send's unfinished S3 or Google Drive upload (Dropbox drops its own). */
     private static function discardTransfer(WPCB_Job $job)
     {
         $t = $job->get()['transfer'] ?? [];

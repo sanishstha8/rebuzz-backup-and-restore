@@ -63,6 +63,7 @@ function wpcb_uninstall_site()
     delete_option('wpcb_settings');
     delete_option('wpcb_version');
     delete_option('wpcb_permalink_reminder');
+    delete_option('wpcb_review');
 
     // Scheduled backups. The plugin's classes aren't loaded here, hence the literal names.
     wp_unschedule_hook('wpcb_scheduled_backup');
@@ -79,6 +80,7 @@ function wpcb_uninstall_site()
     delete_option('wpcb_storage');
     delete_option('wpcb_remote_secrets');
     delete_option('wpcb_dropbox');
+    delete_option('wpcb_gdrive');
     delete_option('wpcb_remote_uploaded');
     delete_option('wpcb_remote_sent');
 
