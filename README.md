@@ -15,8 +15,8 @@ Complete WordPress Backup & Restore Solution.
 
 ## Branches
 
-- `main` — released versions, updated by merging pull requests from `restore-diagnostics`.
-- `restore-diagnostics` — development. The current version is the `Stable tag` in
+- `main` - released versions, updated by merging pull requests from `restore-diagnostics`.
+- `restore-diagnostics` - development. The current version is the `Stable tag` in
   `rebuzz-backup-and-restore/readme.txt`.
 
 ## Releases
