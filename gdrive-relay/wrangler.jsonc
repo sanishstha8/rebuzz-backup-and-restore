@@ -5,6 +5,6 @@
   "compatibility_date": "2025-09-01",
   "vars": {
     // The OAuth client ID from Google Cloud (public). The secret and STATE_KEY are set with `wrangler secret put`.
-    "GOOGLE_CLIENT_ID": "PASTE-CLIENT-ID.apps.googleusercontent.com"
+    "GOOGLE_CLIENT_ID": "118294303839-tmm2vh0v0m3vtb5fu0dpevhpehlct3os.apps.googleusercontent.com"
   }
 }
