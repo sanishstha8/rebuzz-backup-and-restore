@@ -185,6 +185,42 @@ class WPCB_FileScanner
     }
 
     /**
+     * Whether a scan walks into $dir: it sits under the root, and
+     * neither it nor any folder above it is skipped or unreadable.
+     * Builds each path from the root one name at a time, as the walk
+     * does, so a symlinked, excluded or unlistable folder on the way
+     * stops it the same way - the walk backs up nothing it can't list.
+     */
+    public function walksInto($dir)
+    {
+        $root = $this->root();
+        $relative = WPCB_Quarantine::relativeFromRoot($dir);
+
+        if ($root === false || $relative === '' || !$this->walks($root, $root)) {
+            return false;
+        }
+
+        $path = $root;
+
+        foreach (explode('/', $relative) as $name) {
+
+            $path .= DIRECTORY_SEPARATOR . $name;
+
+            if (!is_dir($path) || !$this->walks($path, $root)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** One step of walksInto(): the walk descends into $dir and can list it. */
+    private function walks($dir, $root)
+    {
+        return !$this->shouldSkipDirectory($dir, $root) && @scandir($dir) !== false;
+    }
+
+    /**
      * Whether $dir is another backup plugin's storage folder sitting
      * directly inside uploads, matched by name prefix because those
      * plugins append a per-install hash or date that no fixed path can

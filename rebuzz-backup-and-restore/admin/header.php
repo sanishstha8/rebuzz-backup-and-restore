@@ -68,6 +68,9 @@ if (in_array($wpcbTab, ['wpcb-dashboard', 'wpcb-restore'], true) && WPCB_Feedbac
                 <?php esc_html_e('Rate it on WordPress.org', 'rebuzz-backup-and-restore'); ?>
             </a>
             <button type="button" class="button" data-answer="later"><?php esc_html_e('Maybe later', 'rebuzz-backup-and-restore'); ?></button>
+        </div>
+
+        <div class="wpcb-review-done">
             <button type="button" class="button-link" data-answer="done"><?php esc_html_e('I already did', 'rebuzz-backup-and-restore'); ?></button>
         </div>
 

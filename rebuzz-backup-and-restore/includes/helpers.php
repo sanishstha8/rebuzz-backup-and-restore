@@ -1293,7 +1293,8 @@ function wpcb_detect_foreign_backups()
 
         $current = wpcb_data_dirname();
 
-        foreach (scandir($upload['basedir']) as $entry) {
+        // @ and ?: an uploads folder PHP can't list is just one with nothing to report.
+        foreach (@scandir($upload['basedir']) ?: [] as $entry) {
 
             if ($entry === '.' || $entry === '..' || $entry === $current) {
                 continue;

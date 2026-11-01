@@ -109,16 +109,21 @@ class WPCB_Quarantine
      * finished, never before it.
      *
      * A target is only swept when the backup actually contains that
-     * directory. Without that check, restoring a database-only backup -
-     * or one taken with uploads excluded - would move the whole live
-     * uploads folder aside, which is the one way this could destroy
-     * data rather than preserve it.
+     * directory, or its manifest lists it as covered: a folder that was
+     * empty when backed up leaves nothing in the ZIP. Without that
+     * check, restoring a database-only backup - or one taken with
+     * uploads excluded - would move the whole live uploads folder
+     * aside, which is the one way this could destroy data rather than
+     * preserve it. Backups from before 1.9.1 have no such list.
      *
-     * @param string $jobId    Restore job, recorded for the recovery pass.
-     * @param string $filesDir Extracted "files" directory in the workspace.
-     * @return array{moved: string[], skipped: string[], count: int}
+     * @param string   $jobId    Restore job, recorded for the recovery pass.
+     * @param string   $filesDir Extracted "files" directory in the workspace.
+     * @param string[] $covered  The manifest's backup.covered paths.
+     * @return array{moved: string[], clean: string[], skipped: string[], failed: string[], count: int}
+     *         clean: swept, nothing extra; skipped: left alone, not in the backup;
+     *         failed: extras that could not be moved, still in place.
      */
-    public static function sweepExtras($jobId, $filesDir)
+    public static function sweepExtras($jobId, $filesDir, array $covered = [])
     {
         $existing = self::readRecord();
 
@@ -154,28 +159,36 @@ class WPCB_Quarantine
         ];
 
         $moved = [];
+        $clean = [];
         $skipped = [];
+        $failed = [];
         $count = 0;
 
         foreach (self::targets() as $label => $live) {
 
             $relative = self::relativeFromRoot($live);
 
-            if ($relative === '' || !is_dir($live)) {
+            if ($relative === '') {
                 $skipped[] = $label;
+                continue;
+            }
+
+            if (!is_dir($live)) {
+                $clean[] = $label;
                 continue;
             }
 
             // Only when the backup covers it - see the docblock.
             $source = $filesDir . '/' . $relative;
 
-            if (!is_dir($source)) {
+            if (!is_dir($source) && !in_array($relative, $covered, true)) {
                 $skipped[] = $label;
                 continue;
             }
 
             $old = self::asidePath($live);
             $movedHere = 0;
+            $failedHere = 0;
 
             foreach (self::children($live) as $name) {
 
@@ -191,6 +204,7 @@ class WPCB_Quarantine
                 }
 
                 if (!is_dir($old) && !wp_mkdir_p($old)) {
+                    $failedHere++;
                     break;
                 }
 
@@ -215,15 +229,25 @@ class WPCB_Quarantine
                 if (@rename($live . '/' . $name, $old . '/' . $name)) {
                     $movedHere++;
                     $count++;
+                } else {
+                    $failedHere++;
                 }
+            }
+
+            // Reported apart, so a folder whose extras could not be moved
+            // is never logged as having had nothing extra.
+            if ($failedHere > 0) {
+                $failed[] = $label . ' (' . $failedHere . ')';
             }
 
             if ($movedHere > 0) {
                 $moved[] = $label . ' (' . $movedHere . ')';
             } else {
-                $skipped[] = $label;
+                if ($failedHere === 0) {
+                    $clean[] = $label;
+                }
 
-                // Nothing needed moving; don't leave an empty shell.
+                // Nothing was moved; don't leave an empty shell.
                 if (is_dir($old)) {
                     @rmdir($old);
                 }
@@ -234,7 +258,7 @@ class WPCB_Quarantine
             self::writeRecord($record);
         }
 
-        return ['moved' => $moved, 'skipped' => $skipped, 'count' => $count];
+        return ['moved' => $moved, 'clean' => $clean, 'skipped' => $skipped, 'failed' => $failed, 'count' => $count];
     }
 
     /** "<dir>-old", or the first numbered variant that is free. */

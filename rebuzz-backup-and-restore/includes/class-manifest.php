@@ -57,7 +57,11 @@ class WPCB_Manifest
         'backup' => [
             'type' => 'full',
             'created_at' => current_time('mysql'),
-            'database_file' => 'database/database.sql'
+            'database_file' => 'database/database.sql',
+            // The folders a restore may sweep that this backup walked,
+            // empty or not: an empty one leaves nothing in the ZIP to
+            // show it was covered. See WPCB_Quarantine::sweepExtras().
+            'covered' => self::coveredFolders()
         ],
 
         'statistics' => $statistics,
@@ -106,5 +110,26 @@ class WPCB_Manifest
         }
 
         return $file;
+    }
+
+    /**
+     * WPCB_Quarantine::targets() the file scan walks into, as paths
+     * relative to the site root - the form sweepExtras() compares.
+     *
+     * @return string[]
+     */
+    private static function coveredFolders()
+    {
+        $scanner = new WPCB_FileScanner();
+        $covered = [];
+
+        foreach (WPCB_Quarantine::targets() as $live) {
+
+            if ($scanner->walksInto($live)) {
+                $covered[] = WPCB_Quarantine::relativeFromRoot($live);
+            }
+        }
+
+        return $covered;
     }
 }

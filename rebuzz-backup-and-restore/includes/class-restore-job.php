@@ -2206,14 +2206,33 @@ class WPCB_Restore_Job
 
         if (!empty($jobState['remove_extra_files']) && empty($jobState['swept'])) {
 
-            $sweep = WPCB_Quarantine::sweepExtras($this->job->id(), $filesDir);
+            $manifest = json_decode((string) $workspace->get('manifest.json'), true);
 
-            $this->logger->log(sprintf(
-                'Moved aside %d item(s) the backup did not contain: %s. Nothing to move in: %s.',
+            $covered = (is_array($manifest) && isset($manifest['backup']['covered']) && is_array($manifest['backup']['covered']))
+                ? array_values(array_filter($manifest['backup']['covered'], 'is_string'))
+                : [];
+
+            $sweep = WPCB_Quarantine::sweepExtras($this->job->id(), $filesDir, $covered);
+
+            $summary = sprintf(
+                'Moved aside %d item(s) the backup did not contain: %s.',
                 $sweep['count'],
-                !empty($sweep['moved']) ? implode(', ', $sweep['moved']) : 'nothing',
-                !empty($sweep['skipped']) ? implode(', ', $sweep['skipped']) : 'nothing'
-            ));
+                !empty($sweep['moved']) ? implode(', ', $sweep['moved']) : 'nothing'
+            );
+
+            if (!empty($sweep['clean'])) {
+                $summary .= ' Nothing extra in: ' . implode(', ', $sweep['clean']) . '.';
+            }
+
+            if (!empty($sweep['skipped'])) {
+                $summary .= ' Left alone, as this backup does not include them: ' . implode(', ', $sweep['skipped']) . '.';
+            }
+
+            if (!empty($sweep['failed'])) {
+                $summary .= ' Could not move aside, so still in place: ' . implode(', ', $sweep['failed']) . '.';
+            }
+
+            $this->logger->log($summary);
 
             $this->job->update(['swept' => true]);
         }

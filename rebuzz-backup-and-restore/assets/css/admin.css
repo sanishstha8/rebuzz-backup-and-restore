@@ -511,6 +511,10 @@
     align-items: center;
     justify-content: center;
     gap: 8px 12px;
+    margin-bottom: 10px;
+}
+
+.wpcb-review-done {
     margin-bottom: 18px;
 }
 
