@@ -958,7 +958,7 @@ class WPCB_Storage
     public static function gdriveReturn()
     {
         // phpcs:disable WordPress.Security.NonceVerification.Recommended -- checked against the state saved for this user, see above.
-        if (!isset($_GET['wpcb_gdrive_state']) || ($_GET['page'] ?? '') !== 'wpcb-storage' || !current_user_can('manage_options')) {
+        if (!isset($_GET['wpcb_gdrive_state'], $_GET['page']) || sanitize_key(wp_unslash($_GET['page'])) !== 'wpcb-storage' || !current_user_can('manage_options')) {
             return;
         }
 
